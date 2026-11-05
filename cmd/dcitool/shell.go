@@ -16,6 +16,7 @@ import (
 	"libredci/pkg/dci"
 	"libredci/pkg/platforms/kblspt"
 	"libredci/pkg/runctl"
+	_ "libredci/pkg/runctl/bigcore"
 	_ "libredci/pkg/runctl/lakemont"
 	"libredci/pkg/tapnet"
 )
@@ -105,6 +106,7 @@ func runShell(s *tapnet.Session, script string) (err error) {
 				sh.halted[name] = true
 			}
 		}
+		sh.dropRunning()
 		for name := range sh.halted {
 			t := sh.threads[name]
 			if a, ok := t.(runctl.Attacher); ok && !a.Owned() {
@@ -326,6 +328,7 @@ func (sh *shell) threadCmd(t runctl.Thread, f []string, arg func(int) (uint64, e
 			return err
 		}
 		delete(sh.halted, t.Name())
+		sh.dropRunning()
 		fmt.Printf("%s running\n", t.Name())
 	case "regs":
 		names := t.Registers()
@@ -460,7 +463,7 @@ func (sh *shell) threadCmd(t runctl.Thread, f []string, arg func(int) (uint64, e
 				if la != nil {
 					var code [15]byte
 					if la.ReadLinear(si.PC, code[:]) == nil {
-						if inst, err := x86asm.Decode(code[:], 32); err == nil {
+						if inst, err := x86asm.Decode(code[:], codeMode(t)); err == nil {
 							line += "  " + x86asm.IntelSyntax(inst, si.PC, nil)
 						}
 					}
@@ -544,7 +547,7 @@ func (sh *shell) threadCmd(t runctl.Thread, f []string, arg func(int) (uint64, e
 			if f[0] == "vmd" {
 				hexdump(os.Stdout, addr, buf)
 			} else {
-				return disassemble(addr, buf)
+				return disassemble(addr, buf, codeMode(t))
 			}
 		case "vmw":
 			v, err := arg(2)
@@ -670,10 +673,10 @@ func (sh *shell) vcuCmd(f []string) error {
 	return nil
 }
 
-// disassemble prints 32-bit x86 code.
-func disassemble(addr uint64, code []byte) error {
+// disassemble prints x86 code in the given mode (16, 32 or 64).
+func disassemble(addr uint64, code []byte, mode int) error {
 	for off := 0; off < len(code); {
-		inst, err := x86asm.Decode(code[off:], 32)
+		inst, err := x86asm.Decode(code[off:], mode)
 		n := inst.Len
 		text := x86asm.IntelSyntax(inst, addr+uint64(off), nil)
 		if err != nil || n == 0 {
@@ -683,4 +686,22 @@ func disassemble(addr uint64, code []byte) error {
 		off += n
 	}
 	return nil
+}
+
+// dropRunning forgets threads that are no longer halted, e.g. siblings
+// resumed together with another thread of the same core.
+func (sh *shell) dropRunning() {
+	for name := range sh.halted {
+		if h, err := sh.threads[name].Halted(); err == nil && !h {
+			delete(sh.halted, name)
+		}
+	}
+}
+
+// codeMode is the mode to disassemble a thread's code in.
+func codeMode(t runctl.Thread) int {
+	if m, ok := t.(interface{ CodeMode() int }); ok {
+		return m.CodeMode()
+	}
+	return 32
 }

@@ -73,6 +73,9 @@ func jtagPacket(seq byte, last bool, cmds []uint8) Packet {
 	binary.LittleEndian.PutUint16(p[6:], uint16(len(cmds)*4))
 	for i, c := range cmds {
 		p[8+i/2] |= (c & 0xf) << (4 * (i % 2))
+		if c&0x8 != 0 {
+			p[3] |= 0x01 // packet contains trigger waits
+		}
 	}
 	return p
 }

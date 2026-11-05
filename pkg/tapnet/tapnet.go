@@ -24,6 +24,12 @@ type Driver interface {
 	SelectChain(n int) error
 }
 
+// TriggerDriver is implemented by drivers that can stall scans on a
+// trigger input (Ops.WaitTrigger).
+type TriggerDriver interface {
+	SetTriggerMode(on bool) error
+}
+
 // Session holds the state of a debug session on one platform.
 type Session struct {
 	Plat    *model.Platform
@@ -353,6 +359,10 @@ func (o *Ops) IRDR(ir uint64, n int, in *big.Int) *Result {
 
 // Idle clocks n times in Run-Test/Idle.
 func (o *Ops) Idle(n int) { o.b.Idle(n) }
+
+// WaitTrigger stalls in Run-Test/Idle until the probe's trigger input fires
+// (needs a driver in trigger mode, see TriggerDriver).
+func (o *Ops) WaitTrigger() { o.b.WaitTrigger() }
 
 // Do runs fn's scans against tap as a single JTAG transaction.
 func (s *Session) Do(tap *model.TAP, fn func(o *Ops)) error {

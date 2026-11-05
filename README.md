@@ -15,6 +15,9 @@ those do.
 * Run control for Lakemont cores (CSME, ISH): halt and resume, registers,
   physical and linear memory, I/O ports, MSRs, hardware breakpoints and
   single-stepping.
+* Run control for Kaby Lake cores: halt and resume, registers, physical
+  and linear memory, I/O ports, MSRs, hardware breakpoints and
+  single-stepping.
 * `dcitool`: a command-line tool with an interactive debug shell.
 
 ## Supported targets
@@ -157,6 +160,13 @@ csme stopped at 0x208a0 (breakpoint 0)
 cs = 0x8
 msr 0x10 = 0x000000001caf2d46a0
 csme running
+
+$ dcitool -c "thread cpu.c0t0; halt; bp 0 0xfb918; cont 2000; trace 2; bpc 0; go"
+cpu.c0t0 halted at 0xfb916 (halt request)
+cpu.c0t0 stopped at 0xfb918 (breakpoint 0)
+    0 000f8542  mov esi, eax
+    1 000f8545  movzx eax, bl
+cpu.c0t0 running
 ```
 
 | Command | |
@@ -184,7 +194,8 @@ session, so a later `attach` can resume it correctly.
 * [docs/protocol.md](docs/protocol.md): the DCI DbC wire protocol.
 * [docs/models.md](docs/models.md): TAP networks, links, registers and
   preconditions; the `kbl-spt` platform.
-* [docs/runcontrol.md](docs/runcontrol.md): run control and Lakemont probe mode.
+* [docs/runcontrol.md](docs/runcontrol.md): run control, Lakemont and
+  big-core probe mode.
 
 ## Layout
 
@@ -196,4 +207,4 @@ session, so a later `attach` can resume it correctly.
 | `pkg/model` | types for platform descriptions |
 | `pkg/tapnet` | named TAP/register access, preconditions |
 | `pkg/platforms` | platform descriptions |
-| `pkg/runctl` | run control; `lakemont` for CSME and ISH cores |
+| `pkg/runctl` | run control; `lakemont` for CSME and ISH cores, `bigcore` for Kaby Lake cores |

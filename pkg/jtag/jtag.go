@@ -17,6 +17,9 @@ const (
 	TMS     TCK = 1 << 0 // TMS level for this clock
 	TDI     TCK = 1 << 1 // TDI level for this clock
 	Capture TCK = 1 << 2 // record TDO sampled on this clock
+	// Wait holds this clock until the probe's trigger input fires (e.g. a
+	// CPU signalling probe-mode ready), if the driver supports it.
+	Wait TCK = 1 << 3
 )
 
 // Driver executes a TCK stream and returns the captured TDO bits, one per
@@ -95,6 +98,17 @@ func (b *Builder) Reset() *Builder {
 	}
 	b.state = TestLogicReset
 	return b.Idle(1)
+}
+
+// WaitTrigger adds one Run-Test/Idle clock that waits for the probe's
+// trigger input, followed by one normal idle clock.
+func (b *Builder) WaitTrigger() *Builder {
+	if b.state != RunTestIdle {
+		b.Idle(1)
+	}
+	b.clk(Wait)
+	b.clk(TDI)
+	return b
 }
 
 // Idle clocks n times in Run-Test/Idle (entering it if needed).

@@ -76,6 +76,7 @@ type Probe struct {
 	cfgSeq  byte
 	jtagSeq byte
 	chain   int
+	trigger bool
 
 	mu       sync.Mutex
 	statusCh chan Status
@@ -332,8 +333,9 @@ func (p *Probe) SelectChain(n int) error {
 		return nil
 	}
 	if _, err := p.WriteRegs(true,
-		RegWrite{regJtagCtrl, bankJtag, chainSettings[n][0]},
-		RegWrite{regJtagClock, bankJtag, chainSettings[n][1]}); err != nil {
+		RegWrite{regJtagCtrl, bankJtag, p.ctrl(n)},
+		RegWrite{regJtagClock, bankJtag, chainSettings[n][1]},
+		RegWrite{regJtag2, bankJtag, p.reg2()}); err != nil {
 		return fmt.Errorf("dci: select chain %d: %w", n, err)
 	}
 	if err := p.pulseRun(); err != nil {
@@ -341,6 +343,44 @@ func (p *Probe) SelectChain(n int) error {
 	}
 	p.chain = n
 	return nil
+}
+
+// Trigger mode lets TCK commands with the Wait bit stall until the trigger
+// input (the CPU's PRDY) fires: bank-1 reg 0 bit 5 and reg 2 = 0xa8.
+const (
+	ctrlTrigger = 0x0020
+	reg2Normal  = 0x0098
+	reg2Trigger = 0x00a8
+)
+
+func (p *Probe) ctrl(chain int) uint16 {
+	v := chainSettings[chain][0]
+	if p.trigger {
+		v |= ctrlTrigger
+	}
+	return v
+}
+
+func (p *Probe) reg2() uint16 {
+	if p.trigger {
+		return reg2Trigger
+	}
+	return reg2Normal
+}
+
+// SetTriggerMode enables or disables trigger waits for JTAG scans.
+func (p *Probe) SetTriggerMode(on bool) error {
+	if p.trigger == on {
+		return nil
+	}
+	p.trigger = on
+	if p.chain < 0 {
+		return nil
+	}
+	_, err := p.WriteRegs(true,
+		RegWrite{regJtagCtrl, bankJtag, p.ctrl(p.chain)},
+		RegWrite{regJtag2, bankJtag, p.reg2()})
+	return err
 }
 
 // SetPREQ drives the probe-mode request (PREQ) to the CPU. It is bit 1 of
@@ -382,7 +422,7 @@ func (p *Probe) ReadPins() (Pins, error) {
 	if p.chain < 0 {
 		return Pins{}, errors.New("dci: not connected")
 	}
-	st, err := p.WriteRegs(true, RegWrite{regJtagCtrl, bankJtag, chainSettings[p.chain][0] | 0x8000})
+	st, err := p.WriteRegs(true, RegWrite{regJtagCtrl, bankJtag, p.ctrl(p.chain) | 0x8000})
 	if err != nil {
 		return Pins{}, err
 	}

@@ -60,9 +60,10 @@ Bank 0 belongs to the bridge, bank 1 to the JTAG engine.
 | 0.`0x06`–`0x09` | **Unlock key**: `0x49d6 0xa232 0x2ddf 0x2b99`. Cleared (written 0) on disconnect. |
 | 0.`0x0a` | Required: `0x3c00` on connect and on disconnect. |
 | 0.`0x0b` | Session value: any value on connect, 0 on disconnect. The status packet echoes its low byte. |
-| 1.`0x00` | **JTAG control.** Bit 1 selects the chain (see [Chains](#chains)). Bit 15 requests a pin snapshot: the next status packet carries pin state, and the bit clears itself. |
+| 1.`0x00` | **JTAG control.** Bit 1 selects the chain (see [Chains](#chains)). Bit 5 enables trigger waits (together with 1.`0x02` = `0x00a8`, see below). Bit 15 requests a pin snapshot: the next status packet carries pin state, and the bit clears itself. |
 | 1.`0x01` | Per-chain setting; see [Chains](#chains). |
-| 1.`0x02`, 1.`0x03`, 1.`0x06` | Required values; see [Session](#session). |
+| 1.`0x02` | `0x0098` normally, `0x00a8` with trigger waits enabled. |
+| 1.`0x03`, 1.`0x06` | Required values; see [Session](#session). |
 | 1.`0x05` | **Engine and pin outputs.** Bit 0 must be set for the engine to run. **Bit 1 = PREQ** to the CPU. **Bit 2 = platform reset**: hold for ~170 ms; on the T480 this power-cycles the target and the DbC link drops for about a second. Bit 11 = boot-stall hook 3, bit 15 = early-break hook 2. |
 
 ## Status packets (type `0x01`, target → host)
@@ -91,7 +92,7 @@ byte 0     0x03
 byte 1     JTAG sequence number (8-bit, wraps)
 byte 2     0x00 = more packets of this scan follow
            0x03 = last packet: execute and return TDO
-byte 3     0x80
+byte 3     0x80, or 0x81 if the packet contains wait commands
 byte 4..5  0
 byte 6..7  payload length in bits = 4 × number of TCK commands
 byte 8..   TCK commands, 4 bits each, low nibble first (max. 112 per packet)
@@ -104,7 +105,7 @@ Each TCK command is one clock:
 | 0 | TMS for this clock |
 | 1 | TDI for this clock |
 | 2 | capture TDO on this clock |
-| 3 | 0 |
+| 3 | wait: hold this clock until the trigger input fires |
 
 The host drives the TAP state machine directly. Reading an IDCODE through an
 8-bit IR (nibbles in hex, `2x4` = four times `2`):
@@ -118,6 +119,14 @@ The host drives the TAP state machine directly. Reading an IDCODE through an
 4x31 5       32 bits captured; TMS on the last bit (Exit1-DR)
 3 2          Update-DR, Run-Test/Idle
 ```
+
+**Trigger waits.** With trigger waits enabled (bank-1 reg 0 bit 5,
+reg 2 = `0x00a8`), a command with bit 3 set stalls the engine until the
+trigger input fires. On the CPU chain the trigger is the cores' probe-mode
+ready signal: after submitting a probe-mode instruction (Update-DR, one
+Run-Test/Idle clock), a wait command in Run-Test/Idle holds until the
+instruction has completed. A core signals probe-mode ready only while all
+of its threads are in probe mode.
 
 A scan longer than 112 clocks is split across consecutive packets. All but the
 last have byte 2 = `0x00`. Any number of packets may be sent back to back.
