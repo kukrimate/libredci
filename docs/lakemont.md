@@ -142,8 +142,13 @@ on its next reset; status bit 18 is then set. The register doesn't read back
 the written value. The state at a reset-break stop is the reset state, so it
 can be resumed without restoring anything.
 
-On SPT the CSME resets only with the platform (global reset or power cycle).
-The DCI platform reset (see [protocol.md](protocol.md)) is a power cycle,
-which doesn't preserve an armed reset break. In addition, a DbC link only
-returns after host firmware has initialised xHCI, so reset break cannot catch
-a CSME boot over DbC.
+On SPT the CSME resets only with the platform, and the rest of the platform
+reset waits for it. With the break armed on the CSME (`resetbreak on`), the
+DCI platform reset (`reset`) stops the CSME at its reset vector (CS
+`f000`, EIP `fff0`, CS base `ffff0000`) before the rest of the platform is
+reset: the host freezes and DCI stays up. `attach` adopts the stopped CSME,
+whose registers and memory can then be read. When the CSME resumes, the
+platform reset completes and the platform boots, with the CSME firmware
+running normally. Disarm the break (`resetbreak off`) before resuming:
+with the break still armed, the CSME was found stopped again and the host
+didn't boot.

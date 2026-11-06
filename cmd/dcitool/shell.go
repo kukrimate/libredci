@@ -39,7 +39,8 @@ const shellHelp = `commands:
   bpc SLOT                   clear breakpoint (a running thread is halted,
                              cleared and resumed)
   trace N                    single-step N times, printing each instruction
-  resetbreak on|off          stop at the reset vector on the next reset (untested)
+  resetbreak on|off          stop at the reset vector on the next reset (CSME:
+                             a platform reset completes on go)
   regs                       show registers
   reg NAME [VALUE]           read / write a register
   md ADDR [LEN]              dump physical memory (LEN bytes, default 64)

@@ -65,7 +65,7 @@ Bank 0 belongs to the bridge, bank 1 to the JTAG engine.
 | 1.`0x01` | Per-chain setting; see [Chains](#chains). |
 | 1.`0x02` | `0x0098` normally, `0x00a8` with trigger waits enabled. |
 | 1.`0x03`, 1.`0x06` | Required values; see [Session](#session). |
-| 1.`0x05` | **Engine and pin outputs.** Bit 0 must be set for the engine to run. **Bit 1 = PREQ** to the CPU. **Bit 2 = platform reset**: hold for ~170 ms; on the T480 this power-cycles the target and the DbC link drops for about a second. Bit 11 = boot-stall hook 3, bit 15 = early-break hook 2. |
+| 1.`0x05` | **Engine and pin outputs.** Bit 0 must be set for the engine to run. **Bit 1 = PREQ** to the CPU. **Bit 2 = platform reset**: hold for ~170 ms; the target resets and the DbC link drops. On some hosts the DbC device only re-enumerates after the USB cable is re-plugged. Bit 11 = boot-stall hook 3, bit 15 = early-break hook 2. |
 
 ## Status packets (type `0x01`, target → host)
 
