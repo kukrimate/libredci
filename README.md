@@ -208,3 +208,4 @@ session, so a later `attach` can resume it correctly.
 | `pkg/tapnet` | named TAP/register access, preconditions |
 | `pkg/platforms` | platform descriptions |
 | `pkg/runctl` | run control; `lakemont` for CSME and ISH cores, `bigcore` for Kaby Lake cores |
+| `tools` | development helpers: USB capture, traffic decoding, OpenIPC setup ([tools/README.md](tools/README.md)) |

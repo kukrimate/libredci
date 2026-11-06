@@ -1,0 +1,8 @@
+# build outputs
+/libusb-1.0.so.0
+/tramp.S
+/names.c
+/exports.txt
+/hooked.txt
+/forwarded.txt
+*.usb
