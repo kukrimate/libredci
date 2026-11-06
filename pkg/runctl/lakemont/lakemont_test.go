@@ -6,8 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"libredci/pkg/cpu/kbl"
 	"libredci/pkg/jtag"
-	"libredci/pkg/platforms/kblspt"
+	"libredci/pkg/model"
+	"libredci/pkg/pch/spt"
 	"libredci/pkg/tapnet"
 )
 
@@ -27,7 +29,7 @@ func (recorder) Execute(cmds []jtag.TCK) ([]bool, error) {
 // A register read on the CSME core produces the same scans as the
 // reference tool's capture (eip read while halted).
 func TestReadRegisterScans(t *testing.T) {
-	s := tapnet.New(kblspt.Platform(), recorder{})
+	s := tapnet.New(model.NewPlatform("spt+kbl", spt.Chip(), kbl.Chip()), recorder{})
 	var last []string
 	s.OnTransaction = func(chain int, scans []*jtag.Scan) {
 		last = nil

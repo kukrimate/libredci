@@ -1,97 +1,40 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-// Package kblspt describes a Kaby Lake U/Y (incl. KBL-R) CPU paired with a
-// Sunrise Point-LP PCH, as found in e.g. the ThinkPad T480, reached over
-// DCI. Chain 0 is the PCH, chain 1 the CPU.
+// Package kbl describes the JTAG chain of a Kaby Lake U/Y (incl. KBL-R)
+// CPU.
 //
-// docs/models.md describes the TAP networks and preconditions.
-package kblspt
+// docs/models.md describes the TAP network and preconditions.
+package kbl
 
 import (
 	"fmt"
 	"math/big"
+	"slices"
 	"time"
 
+	"libredci/pkg/ip/vcu"
 	"libredci/pkg/model"
 )
 
-// Precondition names.
+// Condition names.
 const (
-	PchTdoHoldReleased = "pch_tdo_hold_released"
-	CpuTapArbitrated   = "cpu_tap_arbitrated"
-	CpuPackageAwake    = "cpu_package_awake"
-	CpuCoresAwake      = "cpu_cores_awake"
-	CpuCbosAwake       = "cpu_cbos_awake"
+	TapArbitrated = "cpu_tap_arbitrated"
+	PackageAwake  = "cpu_package_awake"
+	CoresAwake    = "cpu_cores_awake"
+	CbosAwake     = "cpu_cbos_awake"
 )
 
 // maxCores is how many cores/CBOs the die can have; which exist is read
 // from the uncore's link-status registers at run time.
 const maxCores = 4
 
+// VCU is the uncore's VCU. Its commands need the cores awake: with only
+// the package awake they time out, and with the package asleep the
+// mailbox reads 0.
+var VCU = vcu.Unit{TAP: "cpu"}
+
 func f(name string, hi, lo int) model.Field { return model.Field{Name: name, Lo: lo, Hi: hi} }
 func bit(name string, b int) model.Field    { return model.Field{Name: name, Lo: b, Hi: b} }
-
-// ---------------------------------------------------------------- PCH ----
-
-// pchSub builds a PCH sub-TAP spliced in through its parent's select register.
-func pchSub(name string, idcode uint32, width, bit int, optional bool, children ...*model.TAP) *model.TAP {
-	return &model.TAP{
-		Name: name, IRLen: 8, IDCode: idcode, IDCodeIR: 0x0c, Optional: optional,
-		Via:      model.Spliced{SelectIR: 0x11, Width: width, Bit: bit},
-		Requires: []string{PchTdoHoldReleased},
-		Children: children,
-	}
-}
-
-func withThreads(t *model.TAP, th ...model.Thread) *model.TAP {
-	t.Threads = append(t.Threads, th...)
-	return t
-}
-
-func pch() *model.TAP {
-	return &model.TAP{
-		Name: "pch", IRLen: 8, IDCode: 0x0a506013, IDCodeIR: 0x02,
-		Registers: []*model.Register{
-			{Name: "idcode", IR: 0x02, Bits: 32, Access: model.ReadOnly, Fields: []model.Field{
-				bit("one", 0), f("manufacturer", 11, 1), f("part", 27, 12), f("version", 31, 28)}},
-			{Name: "tdo_hold", IR: 0xff, Bits: 2, Access: model.WriteOnly},
-			{Name: "cltcr1", IR: 0xc1, Bits: 32, Access: model.ReadWrite, Requires: []string{PchTdoHoldReleased},
-				Fields: []model.Field{bit("pmodef", 0), bit("pmodetpe", 1), f("pmodes", 9, 2)}},
-		},
-		Children: []*model.TAP{
-			pchSub("pch.master", 0x02080001, 16, 0, false,
-				pchSub("pch.master.tpsb", 0x00082003, 24, 2, true),
-				pchSub("pch.master.npk", 0x00082007, 24, 6, true),
-				pchSub("pch.master.retime", 0x00082017, 24, 22, false),
-			),
-			pchSub("pch.left", 0x02080003, 16, 2, false,
-				pchSub("pch.left.csme_par", 0x02086103, 14, 2, false,
-					withThreads(pchSub("pch.left.csme_par.csme", 0x08086101, 14, 2, false),
-						model.Thread{Name: "csme", Arch: "lakemont"}),
-					pchSub("pch.left.csme_par.retime", 0x0008610b, 14, 12, false),
-				),
-			),
-			pchSub("pch.lb", 0x02080005, 16, 4, false,
-				pchSub("pch.lb.ish_par", 0x02088201, 14, 0, false,
-					&model.TAP{
-						Name: "pch.lb.ish_par.ish", IRLen: 8, IDCode: 0x28289013, IDCodeIR: 0x02, Optional: true,
-						Via: model.Spliced{SelectIR: 0x11, Width: 12, Bit: 0,
-							With: []string{"pch.lb.ish_par.retime"}},
-						Requires: []string{PchTdoHoldReleased},
-						Threads:  []model.Thread{{Name: "ish", Arch: "lakemont"}},
-					},
-					pchSub("pch.lb.ish_par.retime", 0x0008800b, 12, 10, false),
-				),
-			),
-			pchSub("pch.bottom", 0x02080007, 16, 6, false),
-			pchSub("pch.top", 0x02080009, 16, 8, false),
-			pchSub("pch.agg", 0x0008000b, 16, 10, false),
-			pchSub("pch.cltap_retime", 0x0008000f, 16, 14, false),
-		},
-	}
-}
-
-// ---------------------------------------------------------------- CPU ----
 
 // Layout of the uncore's per-endpoint link status registers (cbo/core).
 // They are read by scanning zeros (their writable fields are normally 0).
@@ -124,7 +67,7 @@ func cpuCore(n int) *model.TAP {
 	return &model.TAP{
 		Name: fmt.Sprintf("cpu.core%d", n), IRLen: 8,
 		Via:      model.Virtual{IRSelect: 0x110 + 4*uint64(n), DRSelect: 0x111 + 4*uint64(n), DRPadLo: 8},
-		Requires: []string{CpuTapArbitrated, CpuCoresAwake},
+		Requires: []string{TapArbitrated, CoresAwake},
 		ExistsIn: &model.ExistsBit{TAP: "cpu", Register: fmt.Sprintf("core%d_link", n), Field: "exists", Valid: linkValid},
 		Threads: []model.Thread{
 			{Name: fmt.Sprintf("cpu.c%dt0", n), Arch: "kbl-core", Index: 0},
@@ -151,29 +94,30 @@ func cpuCbo(n int) *model.TAP {
 	return &model.TAP{
 		Name: fmt.Sprintf("cpu.cbo%d", n), IRLen: 8, IDCode: 0x0a76b013, IDCodeIR: 0x02,
 		Via:      model.Virtual{IRSelect: 0x100 + 4*uint64(n), DRSelect: 0x101 + 4*uint64(n), DRPadLo: 8},
-		Requires: []string{CpuTapArbitrated, CpuCbosAwake},
+		Requires: []string{TapArbitrated, CbosAwake},
 		ExistsIn: &model.ExistsBit{TAP: "cpu", Register: fmt.Sprintf("cbo%d_link", n), Field: "exists", Valid: linkValid},
 	}
 }
 
 func cpu() *model.TAP {
 	t := &model.TAP{
-		Name: "cpu", IRLen: 9, IDCode: 0xaa76d013, IDCodeIR: 0x02,
-		Registers: []*model.Register{
+		Name: "cpu", IRLen: 9, IDCode: 0xaa76d013, IDCodeIR: 0x02, Arbitration: TapArbitrated,
+		Registers: slices.Concat([]*model.Register{
 			{Name: "idcode", IR: 0x02, Bits: 32, Access: model.ReadOnly},
 			{Name: "silicon_id", IR: 0x40, Bits: 16, Access: model.ReadOnly,
 				Fields: []model.Field{f("repo_id", 7, 0), f("die_cfg", 15, 8)}},
-			regWakeReq, regBclkCtrl, regTapHandshake, regVCUMailbox, regVCUMailboxRead,
+			regWakeReq, regBclkCtrl, regTapHandshake,
+		}, vcu.Registers(TapArbitrated, CoresAwake), []*model.Register{
 			{Name: "probe_mode_req", IR: 0x53, Bits: 1, Access: model.WriteOnly},
 			{Name: "sa_status", IR: 0x51, Bits: 94, Access: model.ReadOnly, Fields: []model.Field{
 				bit("tap_lock", 68), bit("probemode_redirect_req", 75), bit("probemode_preq", 76),
 				bit("probemode_tap_req", 77), bit("probemode_prdy", 78), bit("ring_pwrgood", 83)}},
-		},
+		}),
 	}
 	for n := 0; n < maxCores; n++ {
 		t.Registers = append(t.Registers,
-			linkStatus(fmt.Sprintf("cbo%d_link", n), 0x103+4*uint64(n), CpuCbosAwake),
-			linkStatus(fmt.Sprintf("core%d_link", n), 0x113+4*uint64(n), CpuCoresAwake))
+			linkStatus(fmt.Sprintf("cbo%d_link", n), 0x103+4*uint64(n), CbosAwake),
+			linkStatus(fmt.Sprintf("core%d_link", n), 0x113+4*uint64(n), CoresAwake))
 		t.Children = append(t.Children, cpuCbo(n))
 	}
 	for n := 0; n < maxCores; n++ {
@@ -182,23 +126,10 @@ func cpu() *model.TAP {
 	return t
 }
 
-// ------------------------------------------------------ preconditions ----
-
 func conditions() map[string]*model.Condition {
 	return map[string]*model.Condition{
-		// The PCH holds TDO unless released; needed before using the
-		// cluster-TAP select register.
-		PchTdoHoldReleased: {Name: PchTdoHoldReleased, Acquire: func(t model.Target) (func(model.Target) error, error) {
-			p, _ := t.TAP("pch")
-			reg := p.MustRegister("tdo_hold")
-			if _, err := t.Scan(p, reg, big.NewInt(0)); err != nil {
-				return nil, err
-			}
-			return func(t model.Target) error { _, err := t.Scan(p, reg, big.NewInt(3)); return err }, nil
-		}},
-
 		// Ask the CPU uncore for probe ownership of its TAP network.
-		CpuTapArbitrated: {Name: CpuTapArbitrated, Acquire: func(t model.Target) (func(model.Target) error, error) {
+		TapArbitrated: {Name: TapArbitrated, Acquire: func(t model.Target) (func(model.Target) error, error) {
 			c, _ := t.TAP("cpu")
 			req := regTapHandshake.MustField("probe_request").Set(new(big.Int), 1)
 			if _, err := t.Exchange(c, regTapHandshake, req); err != nil {
@@ -212,7 +143,7 @@ func conditions() map[string]*model.Condition {
 		}},
 
 		// Keep the package out of deep C-states (PCU may be fully off).
-		CpuPackageAwake: {Name: CpuPackageAwake, Acquire: func(t model.Target) (func(model.Target) error, error) {
+		PackageAwake: {Name: PackageAwake, Acquire: func(t model.Target) (func(model.Target) error, error) {
 			c, _ := t.TAP("cpu")
 			wake := big.NewInt(0x6) // c6c7_wake | c6c7_defer
 			fWake, fDefer, fIgn := regBclkCtrl.MustField("c6c7_wake"), regBclkCtrl.MustField("c6c7_defer"), regBclkCtrl.MustField("ignore_wake")
@@ -239,9 +170,9 @@ func conditions() map[string]*model.Condition {
 			return func(t model.Target) error { _, err := t.Scan(c, regBclkCtrl, big.NewInt(0)); return err }, nil
 		}},
 
-		CpuCoresAwake: {Name: CpuCoresAwake, Requires: []string{CpuPackageAwake},
+		CoresAwake: {Name: CoresAwake, Requires: []string{PackageAwake},
 			Acquire: wakeReq(50*time.Millisecond, false)},
-		CpuCbosAwake: {Name: CpuCbosAwake, Requires: []string{CpuPackageAwake},
+		CbosAwake: {Name: CbosAwake, Requires: []string{PackageAwake},
 			Acquire: wakeReq(5*time.Millisecond, true)},
 	}
 }
@@ -286,11 +217,11 @@ func wakeReq(settle time.Duration, ring bool) func(model.Target) (func(model.Tar
 	}
 }
 
-// Platform returns a fresh description.
-func Platform() *model.Platform {
-	return (&model.Platform{
-		Name:       "kbl-spt",
-		Chains:     []model.Chain{{Index: 0, Root: pch()}, {Index: 1, Root: cpu()}},
+// Chip returns a fresh description of the CPU's chain.
+func Chip() model.Chip {
+	return model.Chip{
+		Root:       cpu(),
 		Conditions: conditions(),
-	}).Init()
+		Transient:  []string{CoresAwake, CbosAwake, PackageAwake, TapArbitrated},
+	}
 }

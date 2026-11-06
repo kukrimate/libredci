@@ -7,9 +7,12 @@
 //	dcitool -chain 0 -ir 8:0x2 -dr 32:0
 //
 // Model mode addresses TAPs of a platform description by name, taking care
-// of IR lengths, TAP splicing, virtual chains and preconditions:
+// of IR lengths, TAP splicing, virtual chains and preconditions. The PCH
+// and CPU are detected from the IDCODEs of the chains' root TAPs, or named
+// with -pch and -cpu:
 //
 //	dcitool -list
+//	dcitool -pch spt -cpu kbl -list
 //	dcitool -idcodes
 //	dcitool -tap cpu.cbo0 -ir 0x2 -dr 32:0
 //	dcitool -tap cpu.core0 -read tap_status
@@ -34,7 +37,7 @@ import (
 	"libredci/pkg/dci"
 	"libredci/pkg/jtag"
 	"libredci/pkg/model"
-	"libredci/pkg/platforms/kblspt"
+	"libredci/pkg/platform"
 	"libredci/pkg/tapnet"
 )
 
@@ -78,15 +81,12 @@ func (l opFlag) Set(s string) error {
 	return nil
 }
 
-var platforms = map[string]func() *model.Platform{
-	"kbl-spt": kblspt.Platform,
-}
-
 func main() {
 	var ops []op
 	chain := flag.Int("chain", -1, "raw mode: physical JTAG chain (0 = PCH, 1 = CPU)")
 	tapName := flag.String("tap", "", "model mode: TAP to address")
-	platName := flag.String("platform", "kbl-spt", "platform description")
+	pchName := flag.String("pch", "", "PCH `name` instead of detecting it (none: leave chain 0 out)")
+	cpuName := flag.String("cpu", "", "CPU `name` instead of detecting it (none: leave chain 1 out)")
 	list := flag.Bool("list", false, "list the platform's TAPs and registers")
 	idcodes := flag.Bool("idcodes", false, "read and check the IDCODE of every TAP in the model")
 	shellMode := flag.Bool("shell", false, "interactive debug shell (see 'help' inside)")
@@ -99,15 +99,21 @@ func main() {
 	flag.Parse()
 	log.SetFlags(log.Lmicroseconds)
 
-	mk, ok := platforms[*platName]
-	if !ok {
-		fatal(fmt.Errorf("unknown platform %q", *platName))
-	}
-	plat := mk()
-
-	if *list {
-		listPlatform(plat)
-		return
+	var plat *platform.Platform
+	if *pchName != "" || *cpuName != "" {
+		pch, err := chipFlag(platform.PCHs, *pchName)
+		if err != nil {
+			fatal(err)
+		}
+		cpu, err := chipFlag(platform.CPUs, *cpuName)
+		if err != nil {
+			fatal(err)
+		}
+		plat = platform.New(pch, cpu)
+		if *list {
+			listPlatform(plat.Platform)
+			return
+		}
 	}
 
 	p, err := dci.Open()
@@ -129,7 +135,16 @@ func main() {
 		case *chain >= 0:
 			return runRaw(p, *chain, ops)
 		default:
-			s := tapnet.New(plat, p)
+			if plat == nil {
+				if plat, err = detect(p); err != nil {
+					return err
+				}
+			}
+			if *list {
+				listPlatform(plat.Platform)
+				return nil
+			}
+			s := tapnet.New(plat.Platform, p)
 			s.Verbose = *verbose || *raw
 			if s.Verbose {
 				s.OnTransaction = logTransaction
@@ -143,7 +158,7 @@ func main() {
 				return checkIDCodes(s)
 			}
 			if *shellMode || *script != "" {
-				return runShell(s, *script)
+				return runShell(s, plat, *script)
 			}
 			if *tapName == "" {
 				return fmt.Errorf("need -tap NAME (model mode), -chain N (raw mode), -list or -idcodes")
@@ -154,6 +169,36 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
+}
+
+// chipFlag resolves a -pch/-cpu value: empty or "none" leaves the chip out.
+func chipFlag(list []*platform.Chip, name string) (*platform.Chip, error) {
+	if name == "" || name == "none" {
+		return nil, nil
+	}
+	return platform.Find(list, name)
+}
+
+// detect identifies the PCH and CPU from their root IDCODEs.
+func detect(d tapnet.Driver) (*platform.Platform, error) {
+	pch, cpu, err := platform.Detect(d)
+	if err != nil {
+		return nil, err
+	}
+	for _, det := range []platform.Detection{pch, cpu} {
+		what := "unknown chip, not modelled"
+		switch {
+		case det.IDCode&1 == 0:
+			what = "no IDCODE, not modelled"
+		case det.Chip != nil:
+			what = fmt.Sprintf("%s (%s)", det.Chip.Name, det.Chip.Desc)
+		}
+		fmt.Fprintf(os.Stderr, "chain %d: idcode %#08x: %s\n", det.Chain, det.IDCode, what)
+	}
+	if pch.Chip == nil && cpu.Chip == nil {
+		return nil, fmt.Errorf("no known chip detected; name them with -pch and -cpu")
+	}
+	return platform.New(pch.Chip, cpu.Chip), nil
 }
 
 func fatal(err error) {

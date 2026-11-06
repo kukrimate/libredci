@@ -22,9 +22,15 @@ those do.
 
 ## Supported targets
 
-| Platform | Package | Example | DbC USB ID |
-|---|---|---|---|
-| Kaby Lake U/R + Sunrise Point-LP | `pkg/platforms/kblspt` | ThinkPad T480 | `8087:0a6e` |
+dcitool detects the PCH (chain 0) and the CPU (chain 1) from the IDCODEs
+of the chains' root TAPs and models the chips it knows:
+
+| Chip | `-pch`/`-cpu` name | Package | Root IDCODE | DbC USB ID |
+|---|---|---|---|---|
+| Sunrise Point-LP PCH | `spt` | `pkg/pch/spt` | `0x?a506013` | `8087:0a6e` |
+| Kaby Lake U/Y/R CPU | `kbl` | `pkg/cpu/kbl` | `0x?a76d013` | |
+
+Tested on the ThinkPad T480 (Kaby Lake R + Sunrise Point-LP).
 
 ## Target setup
 
@@ -117,7 +123,12 @@ trailing `#` comment.
 ### TAP access
 
 ```
-$ dcitool -list                          # TAPs and registers of the platform
+$ dcitool -list                          # TAPs and registers of the detected chips
+chain 0: idcode 0x9a506013: spt (Sunrise Point-LP)
+chain 1: idcode 0xaa76d013: kbl (Kaby Lake U/Y/R)
+platform spt+kbl
+...
+$ dcitool -pch spt -cpu kbl -list        # the same without a target
 $ dcitool -idcodes                       # read every TAP's IDCODE and compare to the model
 pch                          0x9a506013  ok
   pch.master                   0x02080001  ok
@@ -129,6 +140,11 @@ pch.left.csme_par.csme ir 0xc dr 32:0x0 -> 0x08086101
 $ dcitool -tap cpu.core0 -read tap_status
 cpu.core0.tap_status = 0x0000400002
 ```
+
+Detection reads 32 bits of DR from each chain after Test-Logic-Reset. A
+chain whose IDCODE is unknown, or that reads 0, is left out of the model.
+`-pch NAME` and `-cpu NAME` skip detection and name the chips (`none`
+leaves a chain out).
 
 `-ir`, `-dr` and `-read` can be repeated and run in order. `-v` logs every
 transaction, and `-vv` also logs raw USB packets.
@@ -197,13 +213,14 @@ session, so a later `attach` can resume it correctly.
 ## Documentation
 
 * [docs/protocol.md](docs/protocol.md): the DCI DbC wire protocol.
-* [docs/models.md](docs/models.md): TAP networks, links, registers and
-  preconditions; the `kbl-spt` platform.
-* [docs/runcontrol.md](docs/runcontrol.md): the run-control interface and
-  its backends.
-* [docs/lakemont.md](docs/lakemont.md): Lakemont probe mode (CSME, ISH).
-* [docs/bigcore.md](docs/bigcore.md): big-core probe mode (host cores),
-  including the differences from OpenIPC.
+* [docs/model.md](docs/model.md): TAP networks, links, registers,
+  preconditions, chip detection.
+* Chips: [pch/spt.md](docs/pch/spt.md), [cpu/kbl.md](docs/cpu/kbl.md).
+* Building blocks: [vcu](docs/ip/vcu.md).
+* [docs/runctl.md](docs/runctl.md): the run-control interface and its
+  backends, [Lakemont](docs/runctl/lakemont.md) probe mode (CSME, ISH) and
+  [big-core](docs/runctl/bigcore.md) probe mode (host cores, including the
+  differences from OpenIPC).
 
 ## Layout
 
@@ -212,8 +229,10 @@ session, so a later `attach` can resume it correctly.
 | `cmd/dcitool` | command-line tool |
 | `pkg/dci` | DCI DbC transport |
 | `pkg/jtag` | TAP state machine and scan builder |
-| `pkg/model` | types for platform descriptions |
+| `pkg/model` | types for chip and platform descriptions |
 | `pkg/tapnet` | named TAP/register access, preconditions |
-| `pkg/platforms` | platform descriptions |
+| `pkg/pch`, `pkg/cpu` | chip descriptions: one package per PCH or CPU |
+| `pkg/platform` | known chips, detection by IDCODE, and their composition into a platform |
+| `pkg/ip` | building blocks used by chips: `vcu` (uncore CSR/MMIO access) |
 | `pkg/runctl` | run control; `lakemont` for CSME and ISH cores, `bigcore` for Kaby Lake cores |
 | `tools` | development helpers: USB capture, traffic decoding, OpenIPC setup ([tools/README.md](tools/README.md)) |

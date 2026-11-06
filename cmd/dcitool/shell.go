@@ -14,7 +14,7 @@ import (
 
 	"golang.org/x/arch/x86/x86asm"
 	"libredci/pkg/dci"
-	"libredci/pkg/platforms/kblspt"
+	"libredci/pkg/platform"
 	"libredci/pkg/runctl"
 	_ "libredci/pkg/runctl/bigcore"
 	_ "libredci/pkg/runctl/lakemont"
@@ -73,14 +73,15 @@ type pinDriver interface {
 
 type shell struct {
 	s       *tapnet.Session
+	plat    *platform.Platform
 	cur     runctl.Thread
 	threads map[string]runctl.Thread
 	halted  map[string]bool // halted by us
 	detach  bool
 }
 
-func runShell(s *tapnet.Session, script string) (err error) {
-	sh := &shell{s: s, threads: map[string]runctl.Thread{}, halted: map[string]bool{}}
+func runShell(s *tapnet.Session, plat *platform.Platform, script string) (err error) {
+	sh := &shell{s: s, plat: plat, threads: map[string]runctl.Thread{}, halted: map[string]bool{}}
 	names, _ := runctl.Threads(s.Plat)
 	if len(names) > 0 {
 		if err := sh.selectThread(names[0]); err != nil {
@@ -206,12 +207,12 @@ func (sh *shell) thread() (runctl.Thread, error) {
 	return sh.cur, nil
 }
 
-// command runs one shell command, then drops the CPU wake requests and the
-// uncore TAP arbitration, as OpenIPC does after each operation; the next
-// access acquires them again.
+// command runs one shell command, then releases the platform's transient
+// conditions (on Kaby Lake the CPU wake requests and the uncore TAP
+// arbitration); the next access acquires them again.
 func (sh *shell) command(line string) (bool, error) {
 	done, err := sh.exec(line)
-	for _, c := range []string{kblspt.CpuCoresAwake, kblspt.CpuCbosAwake, kblspt.CpuPackageAwake, kblspt.CpuTapArbitrated} {
+	for _, c := range sh.s.Plat.Transient {
 		if rerr := sh.s.ReleaseCondition(c); rerr != nil && err == nil {
 			err = rerr
 		}
@@ -261,7 +262,7 @@ func (sh *shell) exec(line string) (done bool, err error) {
 	case "idcodes":
 		return false, checkIDCodes(sh.s)
 	case "csr", "mmio":
-		return false, sh.vcuCmd(f)
+		return false, sh.csrCmd(f)
 	case "reset":
 		pd, ok := sh.s.Drv.(pinDriver)
 		if !ok {
@@ -683,8 +684,11 @@ func hexdump(w io.Writer, addr uint64, b []byte) {
 	}
 }
 
-// vcuCmd: csr DEV FN OFF [SIZE] [VAL] / mmio DEV FN BAR OFF [SIZE] [VAL]
-func (sh *shell) vcuCmd(f []string) error {
+// csrCmd: csr DEV FN OFF [SIZE] [VAL] / mmio DEV FN BAR OFF [SIZE] [VAL]
+func (sh *shell) csrCmd(f []string) error {
+	if sh.plat.CSR == nil {
+		return fmt.Errorf("%s: platform %s has no CSR access", f[0], sh.plat.Name)
+	}
 	n := 3
 	if f[0] == "mmio" {
 		n = 4
@@ -714,16 +718,16 @@ func (sh *shell) vcuCmd(f []string) error {
 	if f[0] == "csr" {
 		dev, fn, off := int(a[0]), int(a[1]), uint16(a[2])
 		if write {
-			err = kblspt.WriteCSR(sh.s, dev, fn, off, size, val)
+			err = sh.plat.CSR.WriteCSR(sh.s, dev, fn, off, size, val)
 		} else {
-			out, err = kblspt.ReadCSR(sh.s, dev, fn, off, size)
+			out, err = sh.plat.CSR.ReadCSR(sh.s, dev, fn, off, size)
 		}
 	} else {
 		dev, fn, bar, off := int(a[0]), int(a[1]), int(a[2]), uint16(a[3])
 		if write {
-			err = kblspt.WriteMMIO(sh.s, dev, fn, bar, off, size, val)
+			err = sh.plat.CSR.WriteMMIO(sh.s, dev, fn, bar, off, size, val)
 		} else {
-			out, err = kblspt.ReadMMIO(sh.s, dev, fn, bar, off, size)
+			out, err = sh.plat.CSR.ReadMMIO(sh.s, dev, fn, bar, off, size)
 		}
 	}
 	if err != nil || write {

@@ -6,9 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"libredci/pkg/cpu/kbl"
 	"libredci/pkg/jtag"
 	"libredci/pkg/model"
-	"libredci/pkg/platforms/kblspt"
+	"libredci/pkg/pch/spt"
 )
 
 // recorder pretends to be a probe: every captured bit reads as 0.
@@ -27,7 +28,7 @@ func (r *recorder) Execute(cmds []jtag.TCK) ([]bool, error) {
 
 func session(t *testing.T) (*Session, *[]string) {
 	var log []string
-	s := New(kblspt.Platform(), &recorder{})
+	s := New(model.NewPlatform("spt+kbl", spt.Chip(), kbl.Chip()), &recorder{})
 	s.Plat.Walk(func(tap *model.TAP, _ int) { s.present[tap] = true })
 	s.OnTransaction = func(chain int, scans []*jtag.Scan) {
 		var ops []string
@@ -90,7 +91,7 @@ func TestVirtualIDCode(t *testing.T) {
 func TestVirtualLayout(t *testing.T) {
 	s, log := session(t)
 	// Skip preconditions to look at the raw composition.
-	for _, n := range []string{kblspt.CpuTapArbitrated, kblspt.CpuCbosAwake, kblspt.CpuCoresAwake, kblspt.CpuPackageAwake} {
+	for _, n := range []string{kbl.TapArbitrated, kbl.CbosAwake, kbl.CoresAwake, kbl.PackageAwake} {
 		s.acquired[n] = true
 	}
 	cbo, _ := s.TAP("cpu.cbo0")
@@ -109,7 +110,7 @@ func TestVirtualLayout(t *testing.T) {
 // The validity fields are not checked here: the recorder reads them as 0.
 func TestPresence(t *testing.T) {
 	s, log := session(t)
-	s.acquired[kblspt.CpuCbosAwake] = true // needed by the CBO link read
+	s.acquired[kbl.CbosAwake] = true // needed by the CBO link read
 	cbo, _ := s.TAP("cpu.cbo2")
 	delete(s.present, cbo)
 	eb := *cbo.ExistsIn

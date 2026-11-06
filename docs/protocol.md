@@ -187,7 +187,8 @@ disconnect
 | 0 | `0x1811` | `0x0028` | PCH: 8-bit IR, IDCODE (IR `0x02`) `0x?a506013` |
 | 1 | `0x1813` | `0x0020` | CPU uncore: **9-bit IR**, IDCODE (IR `0x02`) `0xaa76d013` |
 
-The TAPs behind these roots are described in [models.md](models.md).
+The TAPs behind these roots are described per chip; see
+[model.md](model.md#chips-and-platforms).
 
 > **Warning:** shifting the wrong number of IR bits selects an unrelated
 > instruction. A following DR scan can then write arbitrary data into target

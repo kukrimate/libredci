@@ -145,6 +145,10 @@ type TAP struct {
 	Optional bool   // may be fused off / absent on some parts
 	Via      Link   // nil for the TAP at the root of a chain
 	Requires []string
+	// Arbitration names the condition that gives the probe ownership of
+	// the TAP network below this TAP; run control releases it at the end
+	// of a halt or resume.
+	Arbitration string
 	// ExistsIn names a register field (on another TAP) that says whether
 	// this TAP exists on the part at hand.
 	ExistsIn *ExistsBit
@@ -222,13 +226,45 @@ type Chain struct {
 	Root  *TAP
 }
 
+// Chip describes one chip's JTAG chain and the conditions its TAPs use.
+type Chip struct {
+	Root       *TAP
+	Conditions map[string]*Condition
+	// Transient lists conditions to release after each top-level
+	// operation, in release order.
+	Transient []string
+}
+
 // Platform is a complete target description.
 type Platform struct {
 	Name       string
 	Chains     []Chain
 	Conditions map[string]*Condition
+	// Transient lists conditions to release after each top-level
+	// operation, in release order.
+	Transient []string
 
 	byName map[string]*TAP
+}
+
+// NewPlatform composes chips into a platform; chip i is on chain i. A
+// chip without a root TAP leaves its chain out. It calls Init.
+func NewPlatform(name string, chips ...Chip) *Platform {
+	p := &Platform{Name: name, Conditions: map[string]*Condition{}}
+	for i, c := range chips {
+		if c.Root == nil {
+			continue
+		}
+		p.Chains = append(p.Chains, Chain{Index: i, Root: c.Root})
+		for n, cond := range c.Conditions {
+			if _, dup := p.Conditions[n]; dup {
+				panic("model: duplicate condition " + n)
+			}
+			p.Conditions[n] = cond
+		}
+		p.Transient = append(p.Transient, c.Transient...)
+	}
+	return p.Init()
 }
 
 // Init links parents and indexes TAPs by name. Call once after construction.

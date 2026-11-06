@@ -4,7 +4,7 @@ Big-core debugging requires the platform firmware to set
 `IA32_DEBUG_INTERFACE` (MSR `0xc80`) bit 0 before the first SMI, which
 locks the MSR.
 
-Core TAP registers (see [models.md](models.md)):
+Core TAP registers (see [cpu/kbl.md](../cpu/kbl.md)):
 
 | IR | DR bits | Function |
 |---|---|---|
@@ -17,7 +17,7 @@ Core TAP registers (see [models.md](models.md)):
 
 The sequences are OpenIPC's (captured with the libusb shim). Writes to
 `pcode_wake_req` are read-modify-writes in one split DR scan (see
-[models.md](models.md#registers)), so the other fields keep their values.
+[model.md](../model.md#registers)), so the other fields keep their values.
 
 Halt:
 
@@ -50,7 +50,7 @@ The core executes x86 instructions written through `sub_pir_write`, one
 per scan (the rest of the 16 bytes filled with `nop`), **in the halted
 thread's context and current mode** (16-, 32- or 64-bit), so encodings must
 match that mode. After each scan the host waits for completion (probe-mode
-ready); over DCI this is a trigger wait (see [protocol.md](protocol.md)).
+ready); over DCI this is a trigger wait (see [protocol.md](../protocol.md)).
 
 Special MSR indices are available in probe mode:
 

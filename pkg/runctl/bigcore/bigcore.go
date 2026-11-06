@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"libredci/pkg/model"
-	"libredci/pkg/platforms/kblspt"
 	"libredci/pkg/runctl"
 	"libredci/pkg/tapnet"
 )
@@ -383,9 +382,13 @@ func (t *Thread) wakeReq(preqEnable uint64, flow bool) error {
 }
 
 // releaseArbitration gives up the probe's ownership of the uncore TAP
-// network at the end of a halt or resume.
+// network (the uncore's Arbitration condition) at the end of a halt or
+// resume.
 func (t *Thread) releaseArbitration() error {
-	return t.s.ReleaseCondition(kblspt.CpuTapArbitrated)
+	if t.core.uncore.Arbitration == "" {
+		return nil
+	}
+	return t.s.ReleaseCondition(t.core.uncore.Arbitration)
 }
 
 // Halt stops the thread's core. A running core is stopped with OpenIPC's
