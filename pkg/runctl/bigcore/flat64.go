@@ -210,12 +210,14 @@ func clearFault(p *prog, e enc) {
 	p.exec(e.movR32Imm(rCX, msrICECTLPMR), e.rdmsr(), e.andEAXImm(^uint32(iceFault)), e.wrmsr())
 }
 
-// split breaks [addr, addr+n) into naturally aligned accesses of up to 8 bytes.
+// split breaks [addr, addr+n) into naturally aligned accesses of up to 4
+// bytes. Some MMIO registers hang the core on an 8-byte load (on KBL-R, the
+// one at MCHBAR+0x8).
 func split(addr uint64, n int) (out [][2]int) {
 	for off := 0; off < n; {
 		a := addr + uint64(off)
 		size := 1
-		for _, s := range []int{8, 4, 2} {
+		for _, s := range []int{4, 2} {
 			if a%uint64(s) == 0 && n-off >= s {
 				size = s
 				break

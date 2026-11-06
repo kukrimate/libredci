@@ -227,9 +227,12 @@ undoes the switch before resuming:
    and turn EPT off.
 
 Addresses are then physical. Accesses are split into naturally sized
-pieces of up to 8 bytes (`mov eax/rax, [rdx]`, `mov [rdx], eax/rax`;
-`in`/`out` with DX for ports), and `0x1df` bit 4 is checked after each
-access for a fault. Before exit, everything is restored in reverse order.
+pieces of up to 4 bytes (`mov eax, [rdx]`, `mov [rdx], eax`; `in`/`out`
+with DX for ports), and `0x1df` bit 4 is checked after each access for a
+fault. An 8-byte load from some MMIO registers (on KBL-R, MCHBAR+0x8)
+never completes: the core stops signalling probe-mode ready and the DCI
+JTAG engine waits for it until the target is reset. Before exit,
+everything is restored in reverse order.
 
 Linear addresses are translated by walking the program's page tables
 (32-bit, PAE, 4-level or 5-level paging) with physical reads.
