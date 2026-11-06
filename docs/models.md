@@ -132,9 +132,15 @@ are virtual, with no IR padding and `DRPadLo` = 8.
 
 Link-status registers on `cpu` tell which units exist: `cbo0`–`3_link`
 (IR `0x103+4n`) and `core0`–`3_link` (IR `0x113+4n`). They are 31 bits wide,
-with bit 8 = exists and bit 29 = power good, and read `0x20000100` for a
-present unit. They are read by scanning zeros. The core links only respond
-while the cores are awake.
+with bit 8 = exists, 27 FSM error, 28 access without power, 29 power good
+and 30 disabled, and read `0x20000100` for a present unit. They are read by
+scanning zeros, the CBO links with the CBOs awake and the core links with
+the cores awake. After the wake request they read 0 (and briefly other
+values, e.g. `0x7ffffffe`) for up to ~650 ms when the package was idle, so
+a read counts once power good = 1, FSM error = 0 and access without power =
+0; the link is re-read for up to 2 s until then. A unit found present stays
+present for the session; an absent result is read again on the next
+access.
 
 Uncore registers used by the preconditions:
 

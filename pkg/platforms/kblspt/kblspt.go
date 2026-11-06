@@ -95,13 +95,17 @@ func pch() *model.TAP {
 
 // Layout of the uncore's per-endpoint link status registers (cbo/core).
 // They are read by scanning zeros (their writable fields are normally 0).
-// Core links only answer while the cores are awake.
+// CBO links are read with the CBOs awake, core links with the cores awake.
+// After the wake request they read 0 (or, briefly, other values) until
+// they match linkValid.
 func linkStatus(name string, ir uint64, requires ...string) *model.Register {
 	return &model.Register{Name: name, IR: ir, Bits: 31, Access: model.ReadWrite, ZeroScanRead: true,
 		Requires: requires,
 		Fields: []model.Field{bit("exists", 8), f("dynamic_ir", 17, 9), f("dynamic_dr", 26, 18),
 			bit("fsm_error", 27), bit("access_without_power", 28), bit("power_good", 29), bit("disabled", 30)}}
 }
+
+var linkValid = map[string]uint64{"power_good": 1, "fsm_error": 0, "access_without_power": 0}
 
 var (
 	regTapHandshake = &model.Register{Name: "tap_handshake", IR: 0x7f, Bits: 7, Access: model.ReadWrite,
@@ -124,7 +128,7 @@ func cpuCore(n int) *model.TAP {
 		Name: fmt.Sprintf("cpu.core%d", n), IRLen: 8,
 		Via:      model.Virtual{IRSelect: 0x110 + 4*uint64(n), DRSelect: 0x111 + 4*uint64(n), DRPadLo: 8},
 		Requires: []string{CpuTapArbitrated, CpuCoresAwake},
-		ExistsIn: &model.ExistsBit{TAP: "cpu", Register: fmt.Sprintf("core%d_link", n), Field: "exists"},
+		ExistsIn: &model.ExistsBit{TAP: "cpu", Register: fmt.Sprintf("core%d_link", n), Field: "exists", Valid: linkValid},
 		Threads: []model.Thread{
 			{Name: fmt.Sprintf("cpu.c%dt0", n), Arch: "kbl-core", Index: 0},
 			{Name: fmt.Sprintf("cpu.c%dt1", n), Arch: "kbl-core", Index: 1},
@@ -151,7 +155,7 @@ func cpuCbo(n int) *model.TAP {
 		Name: fmt.Sprintf("cpu.cbo%d", n), IRLen: 8, IDCode: 0x0a76b013, IDCodeIR: 0x02,
 		Via:      model.Virtual{IRSelect: 0x100 + 4*uint64(n), DRSelect: 0x101 + 4*uint64(n), DRPadLo: 8},
 		Requires: []string{CpuTapArbitrated, CpuCbosAwake},
-		ExistsIn: &model.ExistsBit{TAP: "cpu", Register: fmt.Sprintf("cbo%d_link", n), Field: "exists"},
+		ExistsIn: &model.ExistsBit{TAP: "cpu", Register: fmt.Sprintf("cbo%d_link", n), Field: "exists", Valid: linkValid},
 	}
 }
 
@@ -171,7 +175,7 @@ func cpu() *model.TAP {
 	}
 	for n := 0; n < maxCores; n++ {
 		t.Registers = append(t.Registers,
-			linkStatus(fmt.Sprintf("cbo%d_link", n), 0x103+4*uint64(n)),
+			linkStatus(fmt.Sprintf("cbo%d_link", n), 0x103+4*uint64(n), CpuCbosAwake),
 			linkStatus(fmt.Sprintf("core%d_link", n), 0x113+4*uint64(n), CpuCoresAwake))
 		t.Children = append(t.Children, cpuCbo(n))
 	}

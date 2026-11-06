@@ -105,15 +105,23 @@ func TestVirtualLayout(t *testing.T) {
 
 // Presence comes from the uncore link-status "exists" bit, read like the
 // reference tool does (scan zeros through it). The recorder reads 0: absent.
+// An absent result is not cached: the next access reads the bit again.
+// The validity fields are not checked here: the recorder reads them as 0.
 func TestPresence(t *testing.T) {
 	s, log := session(t)
+	s.acquired[kblspt.CpuCbosAwake] = true // needed by the CBO link read
 	cbo, _ := s.TAP("cpu.cbo2")
 	delete(s.present, cbo)
-	_, err := s.ReadIDCode(cbo)
-	if err == nil || !strings.Contains(err.Error(), "not present") {
-		t.Fatalf("want absence error, got %v", err)
+	eb := *cbo.ExistsIn
+	eb.Valid = nil
+	cbo.ExistsIn = &eb
+	for i := 0; i < 2; i++ {
+		_, err := s.ReadIDCode(cbo)
+		if err == nil || !strings.Contains(err.Error(), "not present") {
+			t.Fatalf("want absence error, got %v", err)
+		}
 	}
-	expect(t, *log, "IR[9]=0x10b DR[31]=0x0")
+	expect(t, *log, "IR[9]=0x10b DR[31]=0x0", "IR[9]=0x10b DR[31]=0x0")
 	if !s.KnownAbsent("cpu.cbo2") || s.KnownAbsent("cpu.cbo1") {
 		t.Error("KnownAbsent wrong")
 	}

@@ -89,8 +89,12 @@ func (r *Register) Decode(v *big.Int) string {
 	return sb.String()
 }
 
-// ExistsBit locates a presence flag.
-type ExistsBit struct{ TAP, Register, Field string }
+// ExistsBit locates a presence flag. Valid lists field values of the same
+// register that together mean the register holds a valid value.
+type ExistsBit struct {
+	TAP, Register, Field string
+	Valid                map[string]uint64
+}
 
 // Thread describes a hardware thread debuggable through a TAP. Arch selects
 // the run-control implementation (see package runctl).

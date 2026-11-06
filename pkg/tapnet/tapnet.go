@@ -43,7 +43,8 @@ type Session struct {
 	held     []heldCond   // acquired preconditions, in acquisition order
 	acquired map[string]bool
 	lastSeen map[*model.Register]*big.Int
-	present  map[*model.TAP]bool
+	present  map[*model.TAP]bool // TAPs found present (cached for the session)
+	absent   map[*model.TAP]bool // TAPs whose last presence check read absent
 }
 
 type heldCond struct {
@@ -53,7 +54,7 @@ type heldCond struct {
 
 func New(p *model.Platform, d Driver) *Session {
 	return &Session{Plat: p, Drv: d, reset: map[int]bool{}, acquired: map[string]bool{},
-		present: map[*model.TAP]bool{}}
+		present: map[*model.TAP]bool{}, absent: map[*model.TAP]bool{}}
 }
 
 func (s *Session) Logf(format string, args ...any) {
@@ -446,38 +447,56 @@ func (s *Session) Modify(tap *model.TAP, reg *model.Register, guess *big.Int, fn
 	return old, nil
 }
 
+// presenceTimeout bounds how long Present waits for a valid existence bit.
+const presenceTimeout = 2 * time.Second
+
 // Present reports whether a TAP exists on this target, using its model's
-// existence bit if it has one (the result is cached for the session).
+// existence bit if it has one. A present result is cached for the session;
+// an absent one is read again on the next call.
 func (s *Session) Present(tap *model.TAP) (bool, error) {
 	if tap.ExistsIn == nil {
 		return true, nil
 	}
-	if v, ok := s.present[tap]; ok {
-		return v, nil
+	if s.present[tap] {
+		return true, nil
 	}
 	owner, err := s.TAP(tap.ExistsIn.TAP)
 	if err != nil {
 		return false, err
 	}
 	reg := owner.MustRegister(tap.ExistsIn.Register)
-	v, err := s.Read(owner, reg)
-	if err != nil {
-		return false, fmt.Errorf("tapnet: checking presence of %s: %w", tap.Name, err)
+	// Read until the validity field is set, for up to presenceTimeout.
+	deadline := time.Now().Add(presenceTimeout)
+	var v *big.Int
+	for {
+		var err error
+		if v, err = s.Read(owner, reg); err != nil {
+			return false, fmt.Errorf("tapnet: checking presence of %s: %w", tap.Name, err)
+		}
+		valid := true
+		for name, want := range tap.ExistsIn.Valid {
+			valid = valid && reg.MustField(name).Get(v) == want
+		}
+		if valid || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(time.Millisecond)
 	}
 	ok := reg.MustField(tap.ExistsIn.Field).Get(v) != 0
-	s.present[tap] = ok
-	s.Logf("%s present: %v", tap.Name, ok)
+	if ok {
+		s.present[tap] = true
+		delete(s.absent, tap)
+	} else {
+		s.absent[tap] = true
+	}
+	s.Logf("%s present: %v (%s = %#x)", tap.Name, ok, reg.Name, v)
 	return ok, nil
 }
 
-// KnownAbsent reports whether a TAP has been found to be absent.
+// KnownAbsent reports whether a TAP's last presence check read absent.
 func (s *Session) KnownAbsent(name string) bool {
 	t, ok := s.Plat.TAP(name)
-	if !ok {
-		return false
-	}
-	p, known := s.present[t]
-	return known && !p
+	return ok && s.absent[t]
 }
 
 // ReadIDCode reads the IDCODE of a TAP whose model has one.
