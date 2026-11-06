@@ -48,7 +48,8 @@ byte 4..   up to 15 register writes of 4 bytes, zero padded:
              [register u8][bank u8][value u16]
 ```
 
-A status reply to a config packet carries that packet's sequence number in byte 3.
+A status reply to a config packet carries the low 7 bits of that packet's
+sequence number in byte 3.
 
 ### Registers
 
@@ -72,7 +73,7 @@ Bank 0 belongs to the bridge, bank 1 to the JTAG engine.
 byte 0     0x01
 byte 1     target transmit counter (free running)
 byte 2     sequence number of the last JTAG packet processed
-byte 3     sequence number of the last config packet processed
+byte 3     low 7 bits of the sequence number of the last config packet processed
 byte 4..   16-bit words; word i is at byte 4 + 2i
 ```
 

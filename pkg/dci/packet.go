@@ -39,6 +39,10 @@ func (w RegWrite) String() string {
 	return fmt.Sprintf("b%d.r%#x=%#04x", w.Bank, w.Reg, w.Value)
 }
 
+// cfgAckMask is the part of a config packet's sequence number that status
+// packets echo.
+const cfgAckMask = 0x7f
+
 // maxWritesPerConfig is how many 4-byte register writes fit after the header.
 const maxWritesPerConfig = (PacketSize - 4) / 4
 
@@ -85,7 +89,7 @@ type Status struct {
 	Raw     Packet
 	InSeq   byte // target's own outbound counter
 	JtagAck byte // last JTAG packet sequence number processed
-	CfgAck  byte // last config packet sequence number processed
+	CfgAck  byte // low 7 bits of the last config packet sequence number processed
 }
 
 func parseStatus(p Packet) Status {

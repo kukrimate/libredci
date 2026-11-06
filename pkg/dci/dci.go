@@ -263,7 +263,7 @@ func (p *Probe) WriteRegs(wait bool, writes ...RegWrite) (Status, error) {
 	if !wait {
 		return Status{}, nil
 	}
-	return p.waitStatus(func(s Status) bool { return s.CfgAck == seq })
+	return p.waitStatus(func(s Status) bool { return s.CfgAck == seq&cfgAckMask })
 }
 
 func drain[T any](ch chan T) {
