@@ -197,9 +197,10 @@ type Target interface {
 	Scan(tap *TAP, reg *Register, in *big.Int) (*big.Int, error)
 	// Exchange captures the old value of reg and leaves `in` in it.
 	Exchange(tap *TAP, reg *Register, in *big.Int) (*big.Int, error)
-	// Modify read-modify-writes reg via fn; guess is the expected current
-	// value (the register can only be read by also writing it).
-	Modify(tap *TAP, reg *Register, guess *big.Int, fn func(old *big.Int) *big.Int) (*big.Int, error)
+	// Modify read-modify-writes reg (on a chain's root TAP) in one DR scan:
+	// it shifts fn(0) while capturing the old value, then from Pause-DR
+	// shifts fn(old), which is what the register is updated with.
+	Modify(tap *TAP, reg *Register, fn func(old *big.Int) *big.Int) (*big.Int, error)
 	Wait(d time.Duration)
 	Logf(format string, args ...any)
 	// KnownAbsent reports whether a TAP has been found not to exist.

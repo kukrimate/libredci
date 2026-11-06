@@ -36,6 +36,7 @@ const (
 	Unknown State = iota
 	TestLogicReset
 	RunTestIdle
+	PauseDR // between ExchangeBegin and ExchangeEnd
 )
 
 // Scan is one IR or DR shift inside a Builder's transaction.
@@ -88,6 +89,10 @@ func NewBuilder() *Builder { return &Builder{state: Unknown} }
 // scans (e.g. TAP arbitration or wake requests).
 func NewBuilderInIdle() *Builder { return &Builder{state: RunTestIdle} }
 
+// NewBuilderInPause returns a builder for the transaction that continues an
+// ExchangeBegin: the TAP is parked in Pause-DR.
+func NewBuilderInPause() *Builder { return &Builder{state: PauseDR} }
+
 func (b *Builder) clk(c TCK) { b.cmds = append(b.cmds, c) }
 
 // Reset forces the TAP to Test-Logic-Reset (TMS high for 8 clocks) and then
@@ -113,6 +118,9 @@ func (b *Builder) WaitTrigger() *Builder {
 
 // Idle clocks n times in Run-Test/Idle (entering it if needed).
 func (b *Builder) Idle(n int) *Builder {
+	if b.state == PauseDR {
+		panic("jtag: Idle in Pause-DR; finish the exchange with ExchangeEnd")
+	}
 	if b.state == Unknown {
 		b.Reset()
 	}
@@ -204,6 +212,68 @@ func (b *Builder) Exchange(bits int, in *big.Int) *Scan {
 	}
 	s.Exchange = true
 	b.captured += bits
+	b.clk(TMS | TDI) // Exit1 -> Update
+	b.clk(TDI)       // -> RTI
+	b.state = RunTestIdle
+	b.scans = append(b.scans, s)
+	return s
+}
+
+// ExchangeBegin appends the first half of a read-modify-write DR scan: it
+// shifts `bits` bits of `in` while capturing the old contents and stops in
+// Pause-DR, without passing Update-DR. The transaction ends there; the
+// next one (NewBuilderInPause) shifts the new value with ExchangeEnd.
+func (b *Builder) ExchangeBegin(bits int, in *big.Int) *Scan {
+	if b.state != RunTestIdle {
+		b.Idle(1)
+	}
+	if in == nil {
+		in = new(big.Int)
+	}
+	b.clk(TMS | TDI) // Select-DR
+	b.clk(TDI)       // Capture-DR
+	b.clk(TDI)       // Shift-DR
+	s := &Scan{Bits: bits, In: in, offset: b.captured}
+	for i := 0; i < bits; i++ {
+		c := Capture
+		if in.Bit(i) != 0 {
+			c |= TDI
+		}
+		if i == bits-1 {
+			c |= TMS // -> Exit1-DR
+		}
+		b.clk(c)
+	}
+	b.clk(TDI) // Exit1 -> Pause
+	b.captured += bits
+	b.state = PauseDR
+	b.scans = append(b.scans, s)
+	return s
+}
+
+// ExchangeEnd appends the second half of a read-modify-write DR scan: from
+// Pause-DR it shifts `bits` bits of `in` (not captured), which end up in the
+// register at Update-DR, and returns to Run-Test/Idle.
+func (b *Builder) ExchangeEnd(bits int, in *big.Int) *Scan {
+	if b.state != PauseDR {
+		panic("jtag: ExchangeEnd outside Pause-DR")
+	}
+	if in == nil {
+		in = new(big.Int)
+	}
+	b.clk(TMS | TDI) // Pause -> Exit2
+	b.clk(TDI)       // Exit2 -> Shift
+	s := &Scan{Bits: bits, In: in, offset: -1}
+	for i := 0; i < bits; i++ {
+		var c TCK
+		if in.Bit(i) != 0 {
+			c |= TDI
+		}
+		if i == bits-1 {
+			c |= TMS // -> Exit1-DR
+		}
+		b.clk(c)
+	}
 	b.clk(TMS | TDI) // Exit1 -> Update
 	b.clk(TDI)       // -> RTI
 	b.state = RunTestIdle

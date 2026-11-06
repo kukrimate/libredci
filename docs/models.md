@@ -69,9 +69,14 @@ A register is an IR opcode, a length in bits, named fields and an access kind:
 * **read-write**: whatever is shifted in is latched at Update-DR, so reading
   also writes. Such registers are read with an *exchange* scan: one DR scan
   of 2×n bits with a pause between the halves. The first half captures the old
-  contents, and the second half is what remains in the register. Some
-  read-write registers are conventionally read by scanning zeros through them
-  (their writable fields are normally 0); the model marks these.
+  contents, and the second half is what remains in the register. A
+  read-modify-write (on a chain's root TAP) splits that scan over two
+  transactions, as OpenIPC does: the first shifts the new field values over
+  zeros while capturing the old contents and stops in Pause-DR; the second
+  shifts the old contents with the new field values. Only the second value
+  is latched. Some read-write registers are conventionally read by scanning
+  zeros through them (their writable fields are normally 0); the model
+  marks these.
 * **write-only**.
 
 ## Preconditions
@@ -159,8 +164,9 @@ Preconditions:
   `0x20` (or `0x11`), then wait 1 ms. Release by writing 0.
 * **`cpu_cores_awake`** (needs package awake): set core wake-up for all
   present cores, core C-state limit 1 and package C-state limit 0 in
-  `pcode_wake_req`, then wait 50 ms. Release by restoring the previous value.
-  The wake-up bits read back as 0 (self-clearing).
+  `pcode_wake_req`, then wait 50 ms. Release by restoring the previous
+  values of these fields; the other fields (probe-mode flow, PREQ enables)
+  are left as they are. The wake-up bits read back as 0 (self-clearing).
 * **`cpu_cbos_awake`** (needs package awake): as above, plus turbo disable,
   freeze IA frequency and SAGV disable, then wait 5 ms.
 

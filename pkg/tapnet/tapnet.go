@@ -42,7 +42,6 @@ type Session struct {
 	reset    map[int]bool // chain has been through TLR this session
 	held     []heldCond   // acquired preconditions, in acquisition order
 	acquired map[string]bool
-	lastSeen map[*model.Register]*big.Int
 	present  map[*model.TAP]bool // TAPs found present (cached for the session)
 	absent   map[*model.TAP]bool // TAPs whose last presence check read absent
 }
@@ -97,6 +96,24 @@ func (s *Session) require(names []string) error {
 			return fmt.Errorf("tapnet: precondition %s: %w", n, err)
 		}
 		s.held = append(s.held, heldCond{n, rel})
+	}
+	return nil
+}
+
+// ReleaseCondition undoes one held precondition; the next access that needs
+// it acquires it again.
+func (s *Session) ReleaseCondition(name string) error {
+	for i, h := range s.held {
+		if h.name != name {
+			continue
+		}
+		s.Logf("release %s", h.name)
+		s.held = slices.Delete(s.held, i, i+1)
+		delete(s.acquired, h.name)
+		if h.release != nil {
+			return h.release(s)
+		}
+		return nil
 	}
 	return nil
 }
@@ -219,17 +236,18 @@ func (s *Session) spliceGroup(t *model.TAP, l model.Spliced) ([]*model.TAP, erro
 	return group, nil
 }
 
-// access runs one transaction against tap: splice in what's needed, call
-// body, splice back out.
-func (s *Session) access(tap *model.TAP, body func(b *jtag.Builder, c ctx)) error {
+// enter checks that tap and the TAPs above it are present, acquires their
+// preconditions, selects the chain and returns a builder parked in
+// Run-Test/Idle.
+func (s *Session) enter(tap *model.TAP) (*jtag.Builder, error) {
 	path := tap.Path()
 	for _, t := range path {
 		ok, err := s.Present(t)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if !ok {
-			return fmt.Errorf("tapnet: %s is not present on this target", t.Name)
+			return nil, fmt.Errorf("tapnet: %s is not present on this target", t.Name)
 		}
 	}
 	var reqs []string
@@ -237,12 +255,11 @@ func (s *Session) access(tap *model.TAP, body func(b *jtag.Builder, c ctx)) erro
 		reqs = append(reqs, t.Requires...)
 	}
 	if err := s.require(reqs); err != nil {
-		return err
+		return nil, err
 	}
 	if err := s.Drv.SelectChain(tap.Chain); err != nil {
-		return err
+		return nil, err
 	}
-
 	var b *jtag.Builder
 	if s.reset[tap.Chain] {
 		b = jtag.NewBuilderInIdle()
@@ -253,6 +270,28 @@ func (s *Session) access(tap *model.TAP, body func(b *jtag.Builder, c ctx)) erro
 	}
 	b.NoIRCapture = true
 	b.Idle(4)
+	return b, nil
+}
+
+// run executes a builder's transaction and reports it.
+func (s *Session) run(chain int, b *jtag.Builder) error {
+	if err := b.Run(s.Drv); err != nil {
+		return err
+	}
+	if s.OnTransaction != nil {
+		s.OnTransaction(chain, b.Scans())
+	}
+	return nil
+}
+
+// access runs one transaction against tap: splice in what's needed, call
+// body, splice back out.
+func (s *Session) access(tap *model.TAP, body func(b *jtag.Builder, c ctx)) error {
+	path := tap.Path()
+	b, err := s.enter(tap)
+	if err != nil {
+		return err
+	}
 
 	type undo struct {
 		chain  physical
@@ -309,13 +348,7 @@ func (s *Session) access(tap *model.TAP, body func(b *jtag.Builder, c ctx)) erro
 		b.DR(total, val)
 	}
 	b.Idle(4)
-	if err := b.Run(s.Drv); err != nil {
-		return err
-	}
-	if s.OnTransaction != nil {
-		s.OnTransaction(tap.Chain, b.Scans())
-	}
-	return nil
+	return s.run(tap.Chain, b)
 }
 
 // Ops builds the scans of one transaction against a single TAP.
@@ -388,11 +421,7 @@ func (s *Session) Scan(tap *model.TAP, reg *model.Register, in *big.Int) (*big.I
 	if in == nil {
 		in = new(big.Int)
 	}
-	v, err := s.IRDR(tap, reg.IR, reg.Bits, in)
-	if err == nil {
-		s.seen(tap, reg, v)
-	}
-	return v, err
+	return s.IRDR(tap, reg.IR, reg.Bits, in)
 }
 
 // Read reads a register that can be read by scanning zeros through it.
@@ -413,36 +442,37 @@ func (s *Session) Exchange(tap *model.TAP, reg *model.Register, in *big.Int) (*b
 	if err := s.Do(tap, func(o *Ops) { o.IR(reg.IR); r = o.Exchange(reg.Bits, in) }); err != nil {
 		return nil, err
 	}
-	old := r.Value()
-	s.seen(tap, reg, in)
-	return old, nil
+	return r.Value(), nil
 }
 
-func (s *Session) seen(tap *model.TAP, reg *model.Register, v *big.Int) {
-	if s.lastSeen == nil {
-		s.lastSeen = map[*model.Register]*big.Int{}
+// Modify read-modify-writes reg on a chain's root TAP in one DR scan split
+// over two transactions: the first shifts fn(0) while capturing the old
+// value and stops in Pause-DR; the second shifts fn(old) and updates the
+// register. Only fn(old) is ever applied.
+func (s *Session) Modify(tap *model.TAP, reg *model.Register, fn func(old *big.Int) *big.Int) (*big.Int, error) {
+	if tap.Parent != nil {
+		return nil, fmt.Errorf("tapnet: %s.%s: Modify needs a chain's root TAP", tap.Name, reg.Name)
 	}
-	s.lastSeen[reg] = new(big.Int).Set(v)
-}
-
-// Modify read-modify-writes reg. JTAG can only read such a register by
-// also writing it, so it writes fn(guess) while capturing the old value in
-// the same scan, and rewrites fn(old) if that differs. The guess is the
-// last value this session saw in the register, else the caller's.
-func (s *Session) Modify(tap *model.TAP, reg *model.Register, guess *big.Int, fn func(old *big.Int) *big.Int) (old *big.Int, err error) {
-	if last, ok := s.lastSeen[reg]; ok {
-		guess = last
+	if err := s.require(reg.Requires); err != nil {
+		return nil, err
 	}
-	first := fn(guess)
-	old, err = s.Exchange(tap, reg, first)
+	b, err := s.enter(tap)
 	if err != nil {
 		return nil, err
 	}
-	if want := fn(old); want.Cmp(first) != 0 {
-		s.Logf("%s.%s: guess %#x wrong (was %#x), rewriting %#x", tap.Name, reg.Name, guess, old, want)
-		if _, err := s.Exchange(tap, reg, want); err != nil {
-			return old, err
-		}
+	chain := physical{taps: []*model.TAP{tap}, target: 0}
+	chain.loadIR(b, new(big.Int).SetUint64(reg.IR))
+	sc := b.ExchangeBegin(reg.Bits, fn(new(big.Int)))
+	if err := s.run(tap.Chain, b); err != nil {
+		return nil, err
+	}
+	old := sc.Out
+	b = jtag.NewBuilderInPause()
+	b.NoIRCapture = true
+	b.ExchangeEnd(reg.Bits, fn(new(big.Int).Set(old)))
+	b.Idle(4)
+	if err := s.run(tap.Chain, b); err != nil {
+		return old, err
 	}
 	return old, nil
 }

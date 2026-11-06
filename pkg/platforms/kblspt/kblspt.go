@@ -118,9 +118,6 @@ var (
 		Fields: []model.Field{f("core_wakeup", 8, 1), f("core_cstate_limit", 35, 33), f("pkg_cstate_limit", 40, 37),
 			f("core_preq_enable", 50, 43), bit("turbo_disable", 53), bit("freeze_ia_freq", 54),
 			bit("probe_mode_pcode_flow", 55), bit("sagv_disable", 56)}}
-	// Value pcode_wake_req held on the T480 when idle; used as the guess for
-	// read-modify-write (it is corrected automatically if different).
-	wakeReqTypical = new(big.Int).SetUint64(0x7f90e00000000)
 )
 
 func cpuCore(n int) *model.TAP {
@@ -249,8 +246,9 @@ func conditions() map[string]*model.Condition {
 	}
 }
 
-// wakeReq programs pcode_wake_req to wake all cores and limit C-states,
-// and restores the previous value on release.
+// wakeReq programs pcode_wake_req to wake all cores and limit C-states.
+// Release restores the previous values of the fields it set and leaves the
+// other fields (probe-mode flow and PREQ enables) as they are.
 func wakeReq(settle time.Duration, ring bool) func(model.Target) (func(model.Target) error, error) {
 	return func(t model.Target) (func(model.Target) error, error) {
 		c, _ := t.TAP("cpu")
@@ -261,15 +259,13 @@ func wakeReq(settle time.Duration, ring bool) func(model.Target) (func(model.Tar
 				mask |= 1 << n
 			}
 		}
-		old, err := t.Modify(c, regWakeReq, wakeReqTypical, func(v *big.Int) *big.Int {
-			r := regWakeReq
-			v = r.MustField("core_wakeup").Set(v, mask)
-			v = r.MustField("core_cstate_limit").Set(v, 1)
-			v = r.MustField("pkg_cstate_limit").Set(v, 0)
-			if ring {
-				v = r.MustField("turbo_disable").Set(v, 1)
-				v = r.MustField("freeze_ia_freq").Set(v, 1)
-				v = r.MustField("sagv_disable").Set(v, 1)
+		set := map[string]uint64{"core_wakeup": mask, "core_cstate_limit": 1, "pkg_cstate_limit": 0}
+		if ring {
+			set["turbo_disable"], set["freeze_ia_freq"], set["sagv_disable"] = 1, 1, 1
+		}
+		old, err := t.Modify(c, regWakeReq, func(v *big.Int) *big.Int {
+			for name, val := range set {
+				v = regWakeReq.MustField(name).Set(v, val)
 			}
 			return v
 		})
@@ -277,7 +273,16 @@ func wakeReq(settle time.Duration, ring bool) func(model.Target) (func(model.Tar
 			return nil, err
 		}
 		t.Wait(settle)
-		return func(t model.Target) error { _, err := t.Exchange(c, regWakeReq, old); return err }, nil
+		return func(t model.Target) error {
+			_, err := t.Modify(c, regWakeReq, func(v *big.Int) *big.Int {
+				for name := range set {
+					f := regWakeReq.MustField(name)
+					v = f.Set(v, f.Get(old))
+				}
+				return v
+			})
+			return err
+		}, nil
 	}
 }
 

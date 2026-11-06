@@ -271,7 +271,7 @@ func (t *Thread) Halt() (runctl.StopInfo, error) {
 		}
 		// Let pcode handle the probe-mode request for this core.
 		wake, _ := c.uncore.Register("pcode_wake_req")
-		old, err := t.s.Modify(c.uncore, wake, new(big.Int), func(v *big.Int) *big.Int {
+		old, err := t.s.Modify(c.uncore, wake, func(v *big.Int) *big.Int {
 			v = wake.MustField("probe_mode_pcode_flow").Set(v, 1)
 			pre := wake.MustField("core_preq_enable")
 			return pre.Set(v, pre.Get(v)|1<<c.id)
