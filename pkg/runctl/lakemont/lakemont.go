@@ -850,6 +850,17 @@ func (c *Core) Owned() bool { return c.owned }
 
 // ---- registers ----
 
+// CodeMode is the operand mode (16 or 32) of the program's code: 16 in
+// real mode or with a 16-bit code segment (CS attribute D clear, bit 22 of
+// the attribute register).
+func (c *Core) CodeMode() int {
+	r, err := c.ReadRegisters([]string{"cr0", "csar"})
+	if err != nil || r[0]&1 == 0 || r[1]&(1<<22) == 0 {
+		return 16
+	}
+	return 32
+}
+
 func (c *Core) ReadRegister(name string) (uint64, error) {
 	v, err := c.ReadRegisters([]string{name})
 	if err != nil {
