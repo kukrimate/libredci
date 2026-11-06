@@ -47,8 +47,11 @@ changes to OpenIPC's configuration go into `tools/openipc/csme.patch`.
 
 ## Commits
 
-* Linear history. Each commit is one self-contained change that builds and
-  passes `go vet` and `go test`.
+* Linear history is preferred. Each commit is one self-contained change
+  that builds and passes `go vet` and `go test`.
+* Fold fixes into earlier commits only while those commits are unpublished
+  work in progress. Never rewrite history that is on a public branch (for
+  example `main` on GitHub): put fixes for it in new commits on top.
 * Subject in the imperative, `area: change` for focused changes (for
   example `dci: time out bulk OUT writes`, `tools: add DCI traffic
   decoder`). The body describes what the change does.
