@@ -3,7 +3,8 @@
 libredci is Go host software for debugging Intel platforms through DCI
 (Direct Connect Interface) over USB DbC. `README.md` covers features, usage
 and layout; `docs/` covers the wire protocol (`protocol.md`), platform
-models (`models.md`) and run control (`runcontrol.md`).
+models (`models.md`) and run control (`runcontrol.md`, with the backends in
+`lakemont.md` and `bigcore.md`).
 
 ## Build and test
 

@@ -194,8 +194,10 @@ session, so a later `attach` can resume it correctly.
 * [docs/protocol.md](docs/protocol.md): the DCI DbC wire protocol.
 * [docs/models.md](docs/models.md): TAP networks, links, registers and
   preconditions; the `kbl-spt` platform.
-* [docs/runcontrol.md](docs/runcontrol.md): run control, Lakemont and
-  big-core probe mode.
+* [docs/runcontrol.md](docs/runcontrol.md): the run-control interface and
+  its backends.
+* [docs/lakemont.md](docs/lakemont.md): Lakemont probe mode (CSME, ISH).
+* [docs/bigcore.md](docs/bigcore.md): big-core probe mode (host cores).
 
 ## Layout
 
