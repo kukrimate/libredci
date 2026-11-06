@@ -1,0 +1,69 @@
+diff -ruN a/Data/Xml/KBP/ProductInfo.xml b/Data/Xml/KBP/ProductInfo.xml
+--- a/Data/Xml/KBP/ProductInfo.xml
++++ b/Data/Xml/KBP/ProductInfo.xml
+@@ -11,6 +11,12 @@
+     <TapInfo TapName="KBP_TPSB" NodeType="Chipset" DeviceType="TAP2IOSFSB" Stepping="A0" AddInstanceNameSuffix="true">
+       <DeviceProperty Name="Tap2iosfGeneration" Val="2.0"/>
+     </TapInfo>
++    <TapInfo TapName="KBP_CSME_TAP" NodeType="Box" DeviceType="LMT"  DeviceSubType="2" Stepping="$(Stepping)" InstanceId="0" AddInstanceNameSuffix="false">
++      <TapSelect Name="KBP_CSME_C0" NodeType="Core" DeviceType="LMT"  DeviceSubType="2" InstanceId="0" SelectProc="">
++        <DeviceProperty Name="CoreGroup" Val="CSME"/>
++        <TapSelect Name="KBP_CSME_C0_T0" DeviceType="LMT"  DeviceSubType="2" NodeType="Thread" InstanceId="0"/>
++      </TapSelect>
++    </TapInfo>
+     <TapInfo TapName=".*" NodeType="Chipset" Stepping="$(Stepping)" AddInstanceNameSuffix="true"/>
+   </ProductDescription>
+ </ProductInfo>
+diff -ruN a/Data/Xml/KBP/TapNetworks.A0.xml b/Data/Xml/KBP/TapNetworks.A0.xml
+--- a/Data/Xml/KBP/TapNetworks.A0.xml
++++ b/Data/Xml/KBP/TapNetworks.A0.xml
+@@ -10,6 +10,10 @@
+       <Tap Name="KBP_RGNRIGHT" IrLen="8" Idcode="0x02080005" IdcodeIr="0x0C" SerializeProc="common.soc.add_taps(0x11, (4, 14), 16)" DeserializeProc="common.soc.remove_tap(0x11, 4, 16)" AdjustProc="common.tap.read_idcode_and_remove_if_zero()" CoserializedTaps="KBP_CLTAP_RETIME" InsertBeforeParent="false"/>
+       <Tap Name="KBP_RGNBOTTOM" IrLen="8" Idcode="0x02080007" IdcodeIr="0x0C" SerializeProc="common.soc.add_taps(0x11, (6, 14), 16)" DeserializeProc="common.soc.remove_tap(0x11, 6, 16)" AdjustProc="common.tap.read_idcode_and_remove_if_zero()" CoserializedTaps="KBP_CLTAP_RETIME" InsertBeforeParent="false"/>
+       <Tap Name="KBP_RGNTOP" IrLen="8" Idcode="0x02080009" IdcodeIr="0x0C" SerializeProc="common.soc.add_taps(0x11, (8, 14), 16)" DeserializeProc="common.soc.remove_tap(0x11, 8, 16)" AdjustProc="common.tap.read_idcode_and_remove_if_zero()" CoserializedTaps="KBP_CLTAP_RETIME" InsertBeforeParent="false">
++        <Tap Name="KBP_PARCSMEA" IrLen="8" Idcode="0x208C401" IdcodeIr="0x0C" SerializeProc="common.soc.add_tap(0x11, 0, 14)" DeserializeProc="common.soc.remove_tap(0x11, 0, 14)" AdjustProc="common.tap.read_idcode_and_remove_if_zero()"  InsertBeforeParent="false">
++          <Tap Name="KBP_CSME_TAP" Idcode="0x0808C001" IrLen="8" IdcodeIr="0x0C"  SerializeProc="common.soc.add_tap(0x11, 2, 14)" DeserializeProc="common.soc.remove_tap(0x11, 2, 14)" InsertBeforeParent="false"/>
++          <Tap Name="KBP_PARCSMEA_RETIME" IrLen="8" Idcode="0x0008C00B" IdcodeIr="0x0C" VerifyProc="verify_idcode()" SerializeProc="common.soc.add_tap(0x11, 12, 14)" DeserializeProc="common.soc.remove_tap(0x11, 12, 14)" InsertBeforeParent="false"/>
++        </Tap>
+         <Tap Name="KBP_PARISH" IrLen="8" Idcode="0x0208C405" IdcodeIr="0x0C" SerializeProc="common.soc.add_taps(0x11, (4, 12), 14)" DeserializeProc="common.soc.remove_tap(0x11, 4, 14)" AdjustProc="common.tap.read_idcode_and_remove_if_zero()" CoserializedTaps="KBP_RGNTOP_RETIME" InsertBeforeParent="false">
+           <Tap Name="KBP_ISH_MIA" IrLen="8" Idcode="0x38289013" IdcodeIr="0x02" Preconditions="ISHAwake" SerializeProc="common.soc.add_taps(0x11, (0, 10), 12)" DeserializeProc="common.soc.remove_tap(0x11, 0, 12)" AdjustProc="common.tap.read_idcode_and_remove_if_zero()" CoserializedTaps="KBP_PARISH_RETIME" InsertBeforeParent="false"/>
+           <Tap Name="KBP_PARISH_RETIME" IrLen="8" Idcode="0x0008C20B" IdcodeIr="0x0C" SerializeProc="common.soc.add_tap(0x11, 10, 12)" DeserializeProc="common.soc.remove_tap(0x11, 10, 12)" AdjustProc="common.tap.read_idcode_and_remove_if_zero()" InsertBeforeParent="false"/>
+diff -ruN a/Data/Xml/SPT/ProductInfo.LP.xml b/Data/Xml/SPT/ProductInfo.LP.xml
+--- a/Data/Xml/SPT/ProductInfo.LP.xml
++++ b/Data/Xml/SPT/ProductInfo.LP.xml
+@@ -8,6 +8,12 @@
+     <Product Idcode="0x9A506013" DeviceType="SPT" DeviceSubType="LP" DeviceStepping="C1"/>
+   </ProductIdentification>
+   <ProductDescription DeviceType="SPT" DeviceSubType="LP" Stepping="*" AddTapNetworkInstanceId="false">
++    <TapInfo TapName="SPT_CSME_TAP" NodeType="Box" DeviceType="LMT" DeviceSubType="2" Stepping="$(Stepping)" InstanceId="0" AddInstanceNameSuffix="false">
++      <TapSelect Name="SPT_CSME_C0" NodeType="Core" DeviceType="LMT" DeviceSubType="2" InstanceId="0" SelectProc="">
++        <DeviceProperty Name="CoreGroup" Val="CSME"/>
++        <TapSelect Name="SPT_CSME_C0_T0" DeviceType="LMT"  DeviceSubType="2" NodeType="Thread" InstanceId="0"/>
++      </TapSelect>
++    </TapInfo>
+     <TapInfo TapName="SPT_AGG" NodeType="Chipset" DeviceType="DFX_AGG" Stepping="A0" AddInstanceNameSuffix="true"/>
+     <TapInfo TapName="SPT_TPSB" NodeType="Chipset" DeviceType="SPT_TPSB" Stepping="A0" AddInstanceNameSuffix="true">
+       <DeviceProperty Name="Tap2iosfGeneration" Val="2.0"/>
+diff -ruN a/Data/Xml/SPT/TapNetworks.LP.xml b/Data/Xml/SPT/TapNetworks.LP.xml
+--- a/Data/Xml/SPT/TapNetworks.LP.xml
++++ b/Data/Xml/SPT/TapNetworks.LP.xml
+@@ -6,11 +6,19 @@
+         <Tap Name="SPT_NPK" IrLen="8" Idcode="0x00082007" IdcodeIr="0x0C" SerializeProc="common.soc.add_tap(0x11, 6, 24)" DeserializeProc="common.soc.remove_tap(0x11, 6, 24)" AdjustProc="common.tap.read_idcode_and_remove_if_zero()" InsertBeforeParent="false"/>
+         <Tap Name="SPT_MASTER_RETIME" IrLen="8" Idcode="0x00082017" IdcodeIr="0x0C" SerializeProc="common.soc.add_tap(0x11, 22, 24)" DeserializeProc="common.soc.remove_tap(0x11, 22, 24)" InsertBeforeParent="false"/>
+       </Tap>
++      <Tap Name="SPT_RGNLEFT" IrLen="8" Idcode="0x02080003" IdcodeIr="0x0C" SerializeProc="common.soc.add_tap(0x11, 2, 16)" DeserializeProc="common.soc.remove_tap(0x11, 2, 16)" AdjustProc="common.tap.read_idcode_and_remove_if_zero()" InsertBeforeParent="false">
++        <Tap Name="SPT_PARCSMEA" IrLen="8" Idcode="0x2086103" IdcodeIr="0x0C" SerializeProc="common.soc.add_tap(0x11, 2, 14)" DeserializeProc="common.soc.remove_tap(0x11, 2, 14)" AdjustProc="common.tap.read_idcode_and_remove_if_zero()"  InsertBeforeParent="false">
++          <Tap Name="SPT_CSME_TAP" Idcode="0x08086101" IrLen="8" IdcodeIr="0x0C"  SerializeProc="common.soc.add_tap(0x11, 2, 14)" DeserializeProc="common.soc.remove_tap(0x11, 2, 14)" InsertBeforeParent="false"/>
++          <Tap Name="SPT_PARCSMEA_RETIME" IrLen="8" Idcode="0x0008610B" IdcodeIr="0x0C" VerifyProc="verify_idcode()" SerializeProc="common.soc.add_tap(0x11, 12, 14)" DeserializeProc="common.soc.remove_tap(0x11, 12, 14)" InsertBeforeParent="false"/>
++        </Tap>
++      </Tap>
+       <Tap Name="SPT_RGNLB" IrLen="8" Idcode="0x02080005" IdcodeIr="0x0C" SerializeProc="common.soc.add_tap(0x11, 4, 16)" DeserializeProc="common.soc.remove_tap(0x11, 4, 16)" AdjustProc="common.tap.read_idcode_and_remove_if_zero()" InsertBeforeParent="false">
+         <Tap Name="SPT_PARISH" IrLen="8" Idcode="0x02088201" IdcodeIr="0x0C" SerializeProc="common.soc.add_tap(0x11, 0, 14)" DeserializeProc="common.soc.remove_tap(0x11, 0, 14)" AdjustProc="common.tap.read_idcode_and_remove_if_zero()" InsertBeforeParent="false">
+           <Tap Name="SPT_PARISH_RETIME" IrLen="8" Idcode="0x0008800B" IdcodeIr="0x0C" SerializeProc="common.soc.add_tap(0x11, 10, 12)" DeserializeProc="common.soc.remove_tap(0x11, 10, 12)" InsertBeforeParent="false"/>
+         </Tap>
+       </Tap>
++      <Tap Name="SPT_RGNBOTTOM" IrLen="8" Idcode="0x02080007" IdcodeIr="0x0C" SerializeProc="common.soc.add_tap(0x11, 6, 16)" DeserializeProc="common.soc.remove_tap(0x11, 6, 16)" AdjustProc="common.tap.read_idcode_and_remove_if_zero()" InsertBeforeParent="false"/>
++      <Tap Name="SPT_RGNTOP" IrLen="8" Idcode="0x02080009" IdcodeIr="0x0C" SerializeProc="common.soc.add_tap(0x11, 8, 16)" DeserializeProc="common.soc.remove_tap(0x11, 8, 16)" AdjustProc="common.tap.read_idcode_and_remove_if_zero()" InsertBeforeParent="false"/>
+       <Tap Name="SPT_AGG" IrLen="8" Idcode="0x0008000B" IdcodeIr="0x0C" SerializeProc="common.soc.add_tap(0x11, 10, 16)" DeserializeProc="common.soc.remove_tap(0x11, 10, 16)" AdjustProc="common.tap.read_idcode_and_remove_if_zero()" InsertBeforeParent="false"/>
+       <Tap Name="SPT_CLTAP_RETIME" IrLen="8" Idcode="0x0008000F" IdcodeIr="0x0C" SerializeProc="common.soc.add_tap(0x11, 14, 16)" DeserializeProc="common.soc.remove_tap(0x11, 14, 16)" InsertBeforeParent="false"/>
+     </Tap>

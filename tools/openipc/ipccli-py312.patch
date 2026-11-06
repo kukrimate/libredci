@@ -1,0 +1,87 @@
+diff -ruN a/ipccli/_version.py b/ipccli/_version.py
+--- a/ipccli/_version.py
++++ b/ipccli/_version.py
+@@ -19,10 +19,10 @@
+ # this notice or any other notice embedded in Materials by Intel or Intel's
+ # suppliers or licensors in any way.
+ ###############################################################################
+-from distutils import version
++from packaging import version
+ import re,string
+ 
+-class MyVersion(version.StrictVersion):
++class MyVersion(version.Version):
+     version_re = re.compile(r'^(\d+) \. (\d+) (\. (\d+))? (([a-zA-Z-_]+)(\d+))?$', re.VERBOSE)
+     def parse (self, vstring):
+         match = self.version_re.match(vstring)
+@@ -47,7 +47,7 @@
+ # make sure we always adhere what is supported by StrictVersion
+ # so we always no how to compare version strings
+ __classification__ = 100
+-__version__ = version.LooseVersion("1.2035.1920."+str(__classification__))
++__version__ = version.Version("1.2035.1920."+str(__classification__))
+ __revision__ = "$Revision: 482924 $"
+ __revision__ = __revision__.replace("$Revision:","")
+ __revision__ = __revision__.replace("$","")
+diff -ruN a/py2ipc/pyparsing.py b/py2ipc/pyparsing.py
+--- a/py2ipc/pyparsing.py
++++ b/py2ipc/pyparsing.py
+@@ -682,7 +682,7 @@
+     def __dir__(self):
+         return dir(super(ParseResults,self)) + list(self.keys())
+ 
+-collections.MutableMapping.register(ParseResults)
++collections.abc.MutableMapping.register(ParseResults)
+ 
+ def col (loc,strg):
+     """Returns current column within a string, counting newlines as line separators.
+@@ -1947,7 +1947,7 @@
+             if isinstance(ret,basestring):
+                 # replace escaped characters
+                 if self.escChar:
+-                    ret = re.sub(self.escCharReplacePattern,"\g<1>",ret)
++                    ret = re.sub(self.escCharReplacePattern,r"\g<1>",ret)
+ 
+                 # replace escaped quotes
+                 if self.escQuote:
+@@ -2225,7 +2225,7 @@
+ 
+         if isinstance( exprs, basestring ):
+             self.exprs = [ Literal( exprs ) ]
+-        elif isinstance( exprs, collections.Sequence ):
++        elif isinstance( exprs, collections.abc.Sequence ):
+             # if sequence of strings provided, wrap with Literal
+             if all(isinstance(expr, basestring) for expr in exprs):
+                 exprs = map(Literal, exprs)
+@@ -3230,7 +3230,7 @@
+ 
+     if isinstance(strs,basestring):
+         symbols = strs.split()
+-    elif isinstance(strs, collections.Sequence):
++    elif isinstance(strs, collections.abc.Sequence):
+         symbols = list(strs[:])
+     elif isinstance(strs, _generatorType):
+         symbols = list(strs)
+diff -ruN a/py2ipc/_version.py b/py2ipc/_version.py
+--- a/py2ipc/_version.py
++++ b/py2ipc/_version.py
+@@ -19,8 +19,8 @@
+ # this notice or any other notice embedded in Materials by Intel or Intel's 
+ # suppliers or licensors in any way.
+ ###############################################################################
+-# this must comply with: distutils.version.StrictVersion(version)
+-from distutils.version import StrictVersion
++# this must comply with: distutils.version.Version(version)
++from packaging.version import Version
+ # make sure we always adhere what is supported by StrictVersion
+ # so we always no how to compare version strings
+ 
+@@ -29,7 +29,7 @@
+ # this will help us know someone is using a debug version and not
+ # a true release version
+ # 
+-__version__ = StrictVersion("0.1928.0")
++__version__ = Version("0.1928.0")
+ 
+ # from StrictVersion:
+ 
