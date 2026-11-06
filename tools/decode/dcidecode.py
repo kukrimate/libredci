@@ -148,6 +148,11 @@ def describe(direction, p, sim, high):
     )
 
 
+# Shim log tags of transfers carrying data. Every transfer is logged as
+# ASYNC_*; a synchronous one (libusb_bulk_transfer) also as BULK_*.
+DIRECTION = {"ASYNC_OUT": "OUT", "ASYNC_IN": "IN"}
+
+
 def main():
     """Decodes the log named on the command line."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -162,11 +167,11 @@ def main():
             print(line.rstrip())
             continue
         parts = line.split()
-        if len(parts) < 3 or parts[1] not in ("BULK_OUT", "BULK_IN"):
+        if len(parts) < 3 or parts[1] not in DIRECTION:
             if " : " not in line:
                 print("   ", line.rstrip())
             continue
-        d = "OUT" if parts[1] == "BULK_OUT" else "IN"
+        d = DIRECTION[parts[1]]
         ep = parts[2]
         for p in packets(line):
             print(f"{parts[0]} {d:3} {ep} {describe(d, p, sim, args.H)}")
