@@ -10,6 +10,11 @@ OpenIPC.
 * `decode/dcidecode.py`: turns shim logs into decoded ExI packets: config
   writes, status, TDO, and JTAG TCK streams. With `-H` it follows the TAP
   state machine and prints IR/DR operations, including pause-split scans.
+* `decode/dcisummary.py DECODED SECTION`: summarizes the `###` sections of
+  `dcidecode.py -H` output whose marker contains SECTION: IR/DR operations,
+  config packets and TDO, with repeated lines and polls collapsed and
+  four-core tap_status polls split per core. `--hide-pir` leaves out
+  probe-instruction scans and PDR reads.
 * `openipc/setup.py DEST`: sets up OpenIPC and ipccli in DEST. Downloads
   them from System Studio 2020 Update 3 (Intel's server, or the Wayback
   Machine if that fails) into `~/.cache/libredci-openipc`, reusing them on
