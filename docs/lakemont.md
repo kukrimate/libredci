@@ -79,12 +79,8 @@ makes them physical accesses.
 3. Set up a flat environment in OpenIPC's order (`save_minimum_state`): DS
    base 0, limit `0xffffffff`, AR `0x004f9300`; DR7 = 0; CS the same as DS;
    EFLAGS.VM cleared if set; SS AR `0x004f9300` if SS.DPL isn't 0; EFLAGS.IF
-   cleared if set; CR0.PG cleared if set; CR0.CD and NW set if CD is clear.
-   OpenIPC then issues WBINVD when CS.DPL is 0; libredci doesn't. On the
-   SPT CSME a WBINVD probe instruction was observed to leave the core busy
-   (an observation from the original implementation, not re-tested; OpenIPC
-   only issues it for a ring-0 stop, and the CSME stopped in ring 3 in all
-   later tests).
+   cleared if set; CR0.PG cleared if set; CR0.CD and NW set if CD is clear,
+   followed by WBINVD (waited for like a memory access) if CS.DPL is 0.
 4. DR6 gives the stop reason. EIP (plus CS base) gives the location.
 
 Save EAX, ECX and EDX before using them for memory, I/O or MSR accesses.

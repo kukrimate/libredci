@@ -419,7 +419,7 @@ func (c *Core) prepare() error {
 	c.prepared = true
 	// OpenIPC's sequence (save_minimum_state), in its order.
 	efl, cr0 := cur["eflags"], cur["cr0"]
-	ssDPL := cur["ssar"] >> 13 & 3
+	ssDPL, csDPL := cur["ssar"]>>13&3, cur["csar"]>>13&3
 	_, err = c.run(func(b *batch) {
 		b.writeReg("dsbase", 0)
 		b.writeReg("dslimit", 0xffffffff)
@@ -444,11 +444,11 @@ func (c *Core) prepare() error {
 			b.writeReg("cr0", cr0)
 		}
 		if cr0&cr0CD == 0 {
-			// OpenIPC also issues WBINVD here when CS.DPL is 0. It is not
-			// issued: on SPT's CSME a WBINVD probe instruction was observed
-			// to leave the core busy with an odd status (not re-tested).
 			cr0 |= cr0CD | cr0NW
 			b.writeReg("cr0", cr0)
+			if csDPL == 0 {
+				b.submitBus(pirWBINVD)
+			}
 		}
 		b.checkStatus()
 	})
