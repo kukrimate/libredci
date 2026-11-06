@@ -73,11 +73,18 @@ makes them physical accesses.
 ## Halt
 
 1. Write probe-mode request = 1. Poll status until bit 2 is set and bit 1 is clear.
-2. Save EFLAGS, CS base/limit/AR, SS AR, DS base/limit/AR, CR0 and DR7.
-3. Set up a flat environment: DS and CS base 0, limit `0xffffffff`, AR
-   `0x004f9300`; SS AR `0x004f9300`; DR7 = 0; EFLAGS.IF and VM cleared; CR0
-   with PG cleared, then with CD and NW set (two writes). Do not issue WBINVD
-   on the SPT CSME: it leaves the core busy.
+2. Save EFLAGS, CS base/limit/AR, SS AR, DS base/limit/AR, CR0 and DR7. The
+   CS and SS AR values are kept with AR bits 13:8 (register bits 21:16:
+   limit 19:16, AVL, L) clear, as OpenIPC does.
+3. Set up a flat environment in OpenIPC's order (`save_minimum_state`): DS
+   base 0, limit `0xffffffff`, AR `0x004f9300`; DR7 = 0; CS the same as DS;
+   EFLAGS.VM cleared if set; SS AR `0x004f9300` if SS.DPL isn't 0; EFLAGS.IF
+   cleared if set; CR0.PG cleared if set; CR0.CD and NW set if CD is clear.
+   OpenIPC then issues WBINVD when CS.DPL is 0; libredci doesn't. On the
+   SPT CSME a WBINVD probe instruction was observed to leave the core busy
+   (an observation from the original implementation, not re-tested; OpenIPC
+   only issues it for a ring-0 stop, and the CSME stopped in ring 3 in all
+   later tests).
 4. DR6 gives the stop reason. EIP (plus CS base) gives the location.
 
 Save EAX, ECX and EDX before using them for memory, I/O or MSR accesses.
@@ -113,7 +120,20 @@ bit 0 debug exceptions (#DB), bit 1 shutdown, bit 2 machine check.
 A core resumed with breakpoints or stepping armed can stop again within
 microseconds, so don't treat an immediate return to probe mode as an error.
 libredci hides TF and the DR6 bits it caused from the program, and restores the
-program's own DR7 and PMCR once no breakpoints remain.
+program's own DR7 and PMCR once no breakpoints remain. A slot's program DRn
+is saved when a breakpoint first uses it (also in the state file) and is
+written back once the slot is cleared; `reg drN` shows the program's value
+meanwhile. (OpenIPC writes 0 to a cleared slot.)
+
+The Lakemont register opcodes, the memory/I/O probe instructions (`mov
+dl/dx/edx, [eax]`, `mov [eax], dl/dx/edx`, `in`/`out` with DX), MSR access
+(refused unless CS.RPL is 0) and stepping (EFLAGS.TF and RF, PMCR.IR) are
+the same as OpenIPC's (`common/ia/lakemont`, `lmt/tap.py`). Differences:
+libredci only accesses MSRs listed as known to exist unless forced, keeps
+RFLAGS.TF unless its own step set it (OpenIPC clears it at every halt),
+keeps the halted state in a state file across sessions, and lacks software
+breakpoints, branch stepping, the shutdown and machine-check break
+conditions, MMX/SSE registers and the 128-bit PDR.
 
 ## Reset break
 

@@ -137,11 +137,15 @@ var regOrder = []string{
 // Values used to set up a flat ring-0 32-bit environment for debug accesses.
 const (
 	flatAR = 0x004f9300 // present, writable data / 32-bit, DPL 0, 4K granular
-	eflIF  = 1 << 9
-	eflVM  = 1 << 17
-	cr0PG  = 1 << 31
-	cr0CD  = 1 << 30
-	cr0NW  = 1 << 29
+	// Attribute bits 13:8 (limit 19:16, AVL, L) sit at bits 21:16 of the
+	// CS/SS attribute registers; OpenIPC saves the program values with them
+	// clear.
+	arUpper = 0x003f0000
+	eflIF   = 1 << 9
+	eflVM   = 1 << 17
+	cr0PG   = 1 << 31
+	cr0CD   = 1 << 30
+	cr0NW   = 1 << 29
 )
 
 func init() {
@@ -150,7 +154,7 @@ func init() {
 		// A previous session may have left breakpoints armed while the core
 		// ran; pick up the program's DR7/PMCR so they can be restored.
 		if st, err := c.loadState(); err == nil && st.Orig == nil {
-			c.progDR7, c.progPMCR, c.stepping = st.ProgDR7, st.ProgPMCR, st.Stepping
+			c.progDR7, c.progPMCR, c.stepping, c.progDR = st.ProgDR7, st.ProgPMCR, st.Stepping, st.ProgDR
 			c.owned = st.ProgDR7 != nil
 		}
 		return c, nil
@@ -169,6 +173,9 @@ type Core struct {
 	// progDR7/progPMCR are the program's own values while the debugger
 	// uses DR7/PMCR for breakpoints or stepping (nil when it doesn't).
 	progDR7, progPMCR *uint32
+	// progDR holds the program's DR0-DR3 for slots the debugger has used;
+	// a slot gets its value back once its breakpoint is cleared.
+	progDR map[int]uint32
 
 	// owned: this session halted the core and saved its pre-halt state, so
 	// Resume can restore it. prepared: the debug environment is set up.
@@ -400,6 +407,8 @@ func (c *Core) prepare() error {
 		cur[r] = v[i]
 		c.orig[r] = v[i]
 	}
+	c.orig["csar"] &^= arUpper
+	c.orig["ssar"] &^= arUpper
 	if c.progDR7 != nil {
 		// DR7 currently holds our breakpoints; the program's is remembered.
 		c.orig["dr7"] = *c.progDR7
@@ -408,7 +417,9 @@ func (c *Core) prepare() error {
 		return fmt.Errorf("saving state file: %w", err)
 	}
 	c.prepared = true
-	cr0 := cur["cr0"]
+	// OpenIPC's sequence (save_minimum_state), in its order.
+	efl, cr0 := cur["eflags"], cur["cr0"]
+	ssDPL := cur["ssar"] >> 13 & 3
 	_, err = c.run(func(b *batch) {
 		b.writeReg("dsbase", 0)
 		b.writeReg("dslimit", 0xffffffff)
@@ -417,14 +428,27 @@ func (c *Core) prepare() error {
 		b.writeReg("csbase", 0)
 		b.writeReg("cslimit", 0xffffffff)
 		b.writeReg("csar", flatAR)
-		b.writeReg("ssar", flatAR)
-		b.writeReg("eflags", cur["eflags"]&^(eflIF|eflVM))
-		if cr0&cr0PG != 0 || cr0&cr0CD == 0 {
-			// Same two-step sequence the reference tool uses on the CSME
-			// core. (A WBINVD probe instruction here left the core busy
-			// with an odd status on SPT's CSME, so it is not issued.)
-			b.writeReg("cr0", cr0&^cr0PG)
-			b.writeReg("cr0", cr0&^cr0PG|cr0CD|cr0NW)
+		if efl&eflVM != 0 {
+			efl &^= eflVM
+			b.writeReg("eflags", efl)
+		}
+		if ssDPL != 0 {
+			b.writeReg("ssar", flatAR)
+		}
+		if efl&eflIF != 0 {
+			efl &^= eflIF
+			b.writeReg("eflags", efl)
+		}
+		if cr0&cr0PG != 0 {
+			cr0 &^= cr0PG
+			b.writeReg("cr0", cr0)
+		}
+		if cr0&cr0CD == 0 {
+			// OpenIPC also issues WBINVD here when CS.DPL is 0. It is not
+			// issued: on SPT's CSME a WBINVD probe instruction was observed
+			// to leave the core busy with an odd status (not re-tested).
+			cr0 |= cr0CD | cr0NW
+			b.writeReg("cr0", cr0)
 		}
 		b.checkStatus()
 	})
@@ -491,8 +515,39 @@ func (c *Core) applyDebug(step bool) error {
 		}
 	}
 	active := bits != 0 || step
-	if !active && c.progDR7 == nil {
+	if !active && c.progDR7 == nil && len(c.progDR) == 0 {
 		return nil // never touched
+	}
+	// Keep the program's DRn before the first breakpoint in that slot.
+	var need []int
+	for i, bp := range c.bps {
+		if _, ok := c.progDR[i]; bp != nil && !ok {
+			need = append(need, i)
+		}
+	}
+	if len(need) > 0 {
+		v, err := c.run(func(b *batch) {
+			for _, i := range need {
+				b.readReg(fmt.Sprintf("dr%d", i))
+			}
+		})
+		if err != nil {
+			return err
+		}
+		if c.progDR == nil {
+			c.progDR = map[int]uint32{}
+		}
+		for j, i := range need {
+			c.progDR[i] = v[j]
+		}
+	}
+	// Slots no longer used get the program's value back.
+	free := map[int]uint32{}
+	for i, v := range c.progDR {
+		if c.bps[i] == nil {
+			free[i] = v
+			delete(c.progDR, i)
+		}
 	}
 	if active && c.progDR7 == nil {
 		v, err := c.run(func(b *batch) { b.readReg("pmcr") })
@@ -506,8 +561,13 @@ func (c *Core) applyDebug(step bool) error {
 		}
 	}
 	_, err := c.run(func(b *batch) {
+		for i, v := range free {
+			b.writeReg(fmt.Sprintf("dr%d", i), v)
+		}
 		if !active {
-			b.writeReg("pmcr", *c.progPMCR)
+			if c.progPMCR != nil {
+				b.writeReg("pmcr", *c.progPMCR)
+			}
 			return // dr7 was restored from orig already
 		}
 		for i, bp := range c.bps {
@@ -717,6 +777,7 @@ type savedState struct {
 	ProgDR7  *uint32           `json:"prog_dr7,omitempty"`
 	ProgPMCR *uint32           `json:"prog_pmcr,omitempty"`
 	Stepping bool              `json:"stepping,omitempty"`
+	ProgDR   map[int]uint32    `json:"prog_dr,omitempty"`
 }
 
 func (c *Core) persist() error {
@@ -724,7 +785,7 @@ func (c *Core) persist() error {
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}
-	b, _ := json.MarshalIndent(savedState{c.orig, c.progDR7, c.progPMCR, c.stepping}, "", "  ")
+	b, _ := json.MarshalIndent(savedState{c.orig, c.progDR7, c.progPMCR, c.stepping, c.progDR}, "", "  ")
 	return os.WriteFile(p, b, 0o644)
 }
 
@@ -748,11 +809,11 @@ func (c *Core) Attach() error {
 	case err == nil && st.Orig != nil:
 		// Halted by an earlier session that saved its state.
 		c.halted, c.owned = true, true
-		c.orig, c.progDR7, c.progPMCR = st.Orig, st.ProgDR7, st.ProgPMCR
+		c.orig, c.progDR7, c.progPMCR, c.progDR = st.Orig, st.ProgDR7, st.ProgPMCR, st.ProgDR
 	case err == nil && st.ProgDR7 != nil:
 		// Stopped by itself (breakpoint/step) after an earlier session
 		// resumed it: this is a normal stop, take it over properly.
-		c.progDR7, c.progPMCR, c.stepping = st.ProgDR7, st.ProgPMCR, st.Stepping
+		c.progDR7, c.progPMCR, c.stepping, c.progDR = st.ProgDR7, st.ProgPMCR, st.Stepping, st.ProgDR
 		_, err := c.entered()
 		return err
 	default:
@@ -832,6 +893,11 @@ func (c *Core) ReadRegisters(names []string) ([]uint64, error) {
 		} else {
 			out[i] = uint64(vals[slices.Index(hw, n)])
 		}
+		if slot, ok := drSlot(n); ok {
+			if v, used := c.progDR[slot]; used {
+				out[i] = uint64(v) // the live register is the debugger's
+			}
+		}
 	}
 	return out, nil
 }
@@ -846,12 +912,26 @@ func (c *Core) WriteRegister(name string, v uint64) error {
 	if _, ok := regSelect[name]; !ok {
 		return fmt.Errorf("lakemont: unknown register %q", name)
 	}
+	if slot, ok := drSlot(name); ok {
+		if _, used := c.progDR[slot]; used {
+			c.progDR[slot] = uint32(v) // written once the slot is free
+			return c.persist()
+		}
+	}
 	if _, saved := c.orig[name]; saved {
 		c.orig[name] = uint32(v)
 		return c.persist()
 	}
 	_, err := c.run(func(b *batch) { b.writeReg(name, uint32(v)); b.checkStatus() })
 	return err
+}
+
+// drSlot returns n for "drN" (N = 0..3).
+func drSlot(name string) (int, bool) {
+	if len(name) == 3 && name[:2] == "dr" && name[2] >= '0' && name[2] <= '3' {
+		return int(name[2] - '0'), true
+	}
+	return 0, false
 }
 
 // claim saves a register's program value before the debugger uses it.
