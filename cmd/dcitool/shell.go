@@ -30,10 +30,14 @@ const shellHelp = `commands:
   attach                     adopt a thread that is already halted
   forcego                    resume an attached thread (restore its state first!)
   step                       execute one instruction
-  cont [MS]                  resume and wait for a stop (default 10000 ms)
+  stepmode targeted|all      big cores: step only this thread (default), or
+                             run every core and hold all of them after it
+  cont [MS]                  resume and wait for a stop (default 10000 ms;
+                             the thread keeps running after a timeout)
   wait [MS]                  wait for a running thread to stop
   bp SLOT ADDR [x|w|rw|io] [LEN]  hardware breakpoint (linear address)
-  bpc SLOT                   clear breakpoint
+  bpc SLOT                   clear breakpoint (a running thread is halted,
+                             cleared and resumed)
   trace N                    single-step N times, printing each instruction
   resetbreak on|off          stop at the reset vector on the next reset (untested)
   regs                       show registers
@@ -86,8 +90,10 @@ func runShell(s *tapnet.Session, script string) (err error) {
 		if sh.detach {
 			return
 		}
-		// Disarm breakpoints so nothing of ours stays programmed: running
-		// threads are halted, cleared and resumed below.
+		// Disarm breakpoints so nothing of ours stays programmed. Halted
+		// threads drop them when resumed; running ones are then halted and
+		// resumed one at a time.
+		var armed []string
 		for name, t := range sh.threads {
 			a, ok := t.(interface{ Armed() bool })
 			if !ok || !a.Armed() {
@@ -98,20 +104,15 @@ func runShell(s *tapnet.Session, script string) (err error) {
 				d.ClearBreakpoint(i)
 			}
 			if !sh.halted[name] {
-				fmt.Printf("halting %s to remove breakpoints\n", name)
-				if _, herr := t.Halt(); herr != nil {
-					fmt.Printf("could not halt %s: %v\n", name, herr)
-					continue
-				}
-				sh.halted[name] = true
+				armed = append(armed, name)
 			}
 		}
 		sh.dropRunning()
-		for name := range sh.halted {
+		resume := func(name string) {
 			t := sh.threads[name]
 			if a, ok := t.(runctl.Attacher); ok && !a.Owned() {
 				fmt.Printf("leaving %s halted: its pre-halt state is not known to this session\n", name)
-				continue
+				return
 			}
 			fmt.Printf("resuming %s\n", name)
 			if rerr := t.Resume(); rerr != nil {
@@ -121,11 +122,34 @@ func runShell(s *tapnet.Session, script string) (err error) {
 				}
 			}
 		}
+		for name := range sh.halted {
+			resume(name)
+		}
+		for _, name := range armed {
+			fmt.Printf("halting %s to remove breakpoints\n", name)
+			if _, herr := sh.threads[name].Halt(); herr != nil {
+				fmt.Printf("could not halt %s: %v\n", name, herr)
+				continue
+			}
+			resume(name)
+		}
+		// Cores held without a halt command (stopped by an all-threads step).
+		names, _ := runctl.Threads(sh.s.Plat)
+		for _, name := range names {
+			t, oerr := runctl.Open(sh.s, name)
+			if oerr != nil {
+				continue
+			}
+			if h, ok := t.(interface{ Held() bool }); ok && h.Held() {
+				sh.threads[name] = t
+				resume(name)
+			}
+		}
 	}()
 
 	if script != "" {
 		for _, line := range strings.Split(script, ";") {
-			if done, err := sh.exec(line); err != nil || done {
+			if done, err := sh.command(line); err != nil || done {
 				return err
 			}
 		}
@@ -142,7 +166,7 @@ func runShell(s *tapnet.Session, script string) (err error) {
 			fmt.Println()
 			return in.Err()
 		}
-		done, err := sh.exec(in.Text())
+		done, err := sh.command(in.Text())
 		if err != nil {
 			fmt.Println("error:", err)
 		}
@@ -179,6 +203,19 @@ func (sh *shell) thread() (runctl.Thread, error) {
 		return nil, errors.New("no thread selected")
 	}
 	return sh.cur, nil
+}
+
+// command runs one shell command, then drops the CPU wake requests and the
+// uncore TAP arbitration, as OpenIPC does after each operation; the next
+// access acquires them again.
+func (sh *shell) command(line string) (bool, error) {
+	done, err := sh.exec(line)
+	for _, c := range []string{kblspt.CpuCoresAwake, kblspt.CpuCbosAwake, kblspt.CpuPackageAwake, kblspt.CpuTapArbitrated} {
+		if rerr := sh.s.ReleaseCondition(c); rerr != nil && err == nil {
+			err = rerr
+		}
+	}
+	return done, err
 }
 
 func (sh *shell) exec(line string) (done bool, err error) {
@@ -475,8 +512,30 @@ func (sh *shell) threadCmd(t runctl.Thread, f []string, arg func(int) (uint64, e
 			if err != nil {
 				return err
 			}
-			return d.ClearBreakpoint(int(slot))
+			if err := d.ClearBreakpoint(int(slot)); err != nil {
+				return err
+			}
+			if sh.halted[t.Name()] {
+				return nil // takes effect on resume
+			}
+			// The breakpoint stays programmed while the thread runs: halt
+			// it so that resuming applies the change.
+			si, err := t.Halt()
+			if err != nil {
+				return fmt.Errorf("halting %s to clear the breakpoint: %w", t.Name(), err)
+			}
+			fmt.Printf("%s halted at %#x (%s) to clear the breakpoint; resuming\n", t.Name(), si.PC, si.Reason)
+			return t.Resume()
 		}
+	case "stepmode":
+		sm, ok := t.(interface{ SetStepMode(string) error })
+		if !ok {
+			return fmt.Errorf("%s has no step modes", t.Name())
+		}
+		if len(f) < 2 {
+			return errors.New("stepmode targeted|all")
+		}
+		return sm.SetStepMode(f[1])
 	case "resetbreak":
 		rb, ok := t.(interface{ SetResetBreak(bool) error })
 		if !ok {

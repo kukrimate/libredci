@@ -70,6 +70,10 @@ if (!(msr.lo & DEBUG_LOCK)) {			/* bit 30 */
 }
 ```
 
+Each core is halted and resumed on its own, and any number of cores can be
+halted at the same time. A breakpoint or single-step stop stops only that
+thread's core.
+
 ### CSME run control
 
 Debugging the CSME (Lakemont) core needs Red Unlock. On Skylake and Kaby
@@ -174,7 +178,8 @@ cpu.c0t0 running
 | `threads`, `thread NAME` | list threads, select one |
 | `status`, `halt`, `go` | run state |
 | `step`, `trace N`, `cont [MS]`, `wait [MS]` | single-step, step N times with disassembly, resume and wait for a stop |
-| `bp SLOT ADDR [x\|w\|rw\|io] [LEN]`, `bpc SLOT` | hardware breakpoints |
+| `stepmode targeted\|all` | big cores: step only the selected thread (default), or run all cores and hold them after each step |
+| `bp SLOT ADDR [x\|w\|rw\|io] [LEN]`, `bpc SLOT` | hardware breakpoints (`bpc` on a running thread halts, clears and resumes it) |
 | `regs`, `reg NAME [VALUE]` | registers |
 | `md ADDR [LEN]`, `mw ADDR VALUE [SIZE]` | physical memory |
 | `vmd`, `vmw`, `v2p`, `dis LIN [LEN]` | linear memory, translation, disassembly |
@@ -197,7 +202,8 @@ session, so a later `attach` can resume it correctly.
 * [docs/runcontrol.md](docs/runcontrol.md): the run-control interface and
   its backends.
 * [docs/lakemont.md](docs/lakemont.md): Lakemont probe mode (CSME, ISH).
-* [docs/bigcore.md](docs/bigcore.md): big-core probe mode (host cores).
+* [docs/bigcore.md](docs/bigcore.md): big-core probe mode (host cores),
+  including the differences from OpenIPC.
 
 ## Layout
 

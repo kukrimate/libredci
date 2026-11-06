@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"libredci/pkg/model"
+	"libredci/pkg/platforms/kblspt"
 	"libredci/pkg/runctl"
 	"libredci/pkg/tapnet"
 )
@@ -32,6 +33,22 @@ const (
 	irProbeMode = 0x86 // 4 bits: [1] probe-mode entry request
 )
 
+// Uncore instructions that reach every core TAP at once: 0x158 loads the
+// given instruction into all core TAPs, 0x159 scans their data registers.
+const (
+	irParallelCoreIR = 0x158 // 8 bits
+	irParallelCoreDR = 0x159 // probe_mode: 12 bits (data in [11:8])
+)
+
+// Step modes, after OpenIPC's StepMode setting.
+const (
+	// StepTargeted runs only the stepped thread (ReleaseTargetedThread).
+	StepTargeted = "targeted"
+	// StepAll runs every core during the step and stops all of them after
+	// it (ReleaseAllThreads, OpenIPC's default on KBL).
+	StepAll = "all"
+)
+
 // Probe-mode MSR indices.
 const (
 	msrProbeToPDR = 0x70  // rdmsr with EAX = index: scratch/state value -> PDR
@@ -40,6 +57,9 @@ const (
 	msrP6CRCPL    = 0x101 // current privilege level
 	msrSCP0       = 0x160 // scratch registers SCP0..SCP15
 	msrICECTLPMR  = 0x1df // probe-mode control
+	msrDebugCtl   = 0x1d9 // IA32_DEBUGCTL
+	debugCtlBTF   = 1 << 1
+	msrPEBSEnable = 0x3f1 // read and written through SCP13 in probe mode
 	icePDR        = 1 << 14
 	iceFault      = 1 << 4
 	iceRemInPM    = 1 << 17
@@ -55,6 +75,36 @@ const (
 	tsDisabledT0 = 1 << 14
 )
 
+// priorStates names the prior-state codes of the entry snapshot (bits
+// 23:16), as OpenIPC's break conditions do.
+var priorStates = map[uint64]string{
+	0x01: "debug trap", 0x02: "HLE abort", 0x04: "SMM entry", 0x05: "SMM exit",
+	0x07: "HLEP abort", 0x09: "error shutdown", 0x0c: "C6 exit", 0x0d: "C6 entry",
+	0x1f: "uncore cache flush",
+	0x22: "MWAIT C1", 0x23: "MWAIT C1 B", 0x24: "MWAIT C3", 0x25: "MWAIT C3 B",
+	0x26: "MWAIT C6", 0x27: "MWAIT C6 B", 0x28: "MWAIT C7", 0x29: "MWAIT C7 B",
+	0x2a: "MWAIT C8", 0x2b: "MWAIT C8 B", 0x2c: "MWAIT C9", 0x2d: "MWAIT C9 B",
+	0x2e: "MWAIT C10", 0x2f: "MWAIT C10 B",
+	0x5c: "VM exit", 0x5d: "VM clear", 0x83: "INIT", 0x86: "machine check",
+	0x88: "HLT", 0x89: "PFAT sleep", 0x8a: "shutdown", 0x8b: "wait for SIPI",
+	0x8e: "TPD enter", 0xdb: "VM launch",
+}
+
+// noStep lists the prior states a thread cannot be stepped out of (it would
+// not execute an instruction): HLT, wait for SIPI, error shutdown, MWAIT.
+func noStep(prior uint64) bool {
+	return prior == 0x88 || prior == 0x8b || prior == 0x09 || prior >= 0x22 && prior <= 0x2f
+}
+
+// prior returns the entry snapshot's prior state, by name if known.
+func (t *Thread) prior() string {
+	code := t.entry >> 16 & 0xff
+	if n, ok := priorStates[code]; ok {
+		return n
+	}
+	return fmt.Sprintf("prior state %#x", code)
+}
+
 // Segment numbers for msrProbeSeg.
 var segNum = map[string]int{"es": 1, "cs": 3, "ss": 5, "ds": 7, "fs": 9, "gs": 0xb, "idt": 0xc, "gdt": 0xd, "tr": 0xe, "ldt": 0xf}
 
@@ -68,7 +118,7 @@ func init() {
 		if _, err := fmt.Sscanf(tap.Name[len(uncore.Name):], ".core%d", &coreID); err != nil {
 			return nil, fmt.Errorf("bigcore: cannot derive core number from %s", tap.Name)
 		}
-		return &Thread{s: s, core: coreFor(s, tap, uncore, coreID), idx: th.Index, name: th.Name}, nil
+		return coreFor(s, tap, uncore, coreID).thread(s, th.Index, th.Name), nil
 	})
 }
 
@@ -77,14 +127,65 @@ type coreState struct {
 	tap, uncore *model.TAP
 	id          int
 	halted      bool
-	wakeOld     *big.Int
 	threads     map[int]*Thread // threads prepared for probe-mode instructions
+	objs        map[int]*Thread // all thread objects of the core, by index
 }
 
 var (
-	coresMu sync.Mutex
-	cores   = map[*tapnet.Session]map[*model.TAP]*coreState{}
+	coresMu   sync.Mutex
+	cores     = map[*tapnet.Session]map[*model.TAP]*coreState{}
+	stepModes = map[*tapnet.Session]string{}
 )
+
+// SetStepMode selects how Step releases threads for this session:
+// StepTargeted (the default) or StepAll.
+func (t *Thread) SetStepMode(mode string) error {
+	if mode != StepTargeted && mode != StepAll {
+		return fmt.Errorf("bigcore: step mode must be %s or %s", StepTargeted, StepAll)
+	}
+	coresMu.Lock()
+	defer coresMu.Unlock()
+	stepModes[t.s] = mode
+	return nil
+}
+
+func (t *Thread) stepMode() string {
+	coresMu.Lock()
+	defer coresMu.Unlock()
+	if m := stepModes[t.s]; m != "" {
+		return m
+	}
+	return StepTargeted
+}
+
+// Held reports whether this session holds the thread's core in probe mode
+// (halted by it, or stopped by an all-threads step).
+func (t *Thread) Held() bool { return t.core.halted }
+
+// packageCores returns this session's state for every present core on the
+// uncore.
+func (t *Thread) packageCores() ([]*coreState, error) {
+	var out []*coreState
+	u := t.core.uncore
+	for _, ch := range u.Children {
+		if len(ch.Threads) == 0 || ch.Threads[0].Arch != "kbl-core" {
+			continue
+		}
+		ok, err := t.s.Present(ch)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		var id int
+		if _, err := fmt.Sscanf(ch.Name[len(u.Name):], ".core%d", &id); err != nil {
+			return nil, fmt.Errorf("bigcore: cannot derive core number from %s", ch.Name)
+		}
+		out = append(out, coreFor(t.s, ch, u, id))
+	}
+	return out, nil
+}
 
 func coreFor(s *tapnet.Session, tap, uncore *model.TAP, id int) *coreState {
 	coresMu.Lock()
@@ -96,10 +197,33 @@ func coreFor(s *tapnet.Session, tap, uncore *model.TAP, id int) *coreState {
 	}
 	c := m[tap]
 	if c == nil {
-		c = &coreState{tap: tap, uncore: uncore, id: id, threads: map[int]*Thread{}}
+		c = &coreState{tap: tap, uncore: uncore, id: id, threads: map[int]*Thread{}, objs: map[int]*Thread{}}
 		m[tap] = c
 	}
 	return c
+}
+
+// thread returns the core's thread object for idx, creating it once: the
+// saved state of a thread must not exist twice.
+func (c *coreState) thread(s *tapnet.Session, idx int, name string) *Thread {
+	coresMu.Lock()
+	defer coresMu.Unlock()
+	t := c.objs[idx]
+	if t == nil {
+		t = &Thread{s: s, core: c, idx: idx, name: name}
+		c.objs[idx] = t
+	}
+	return t
+}
+
+// sibling returns the other thread of the core, or nil.
+func (t *Thread) sibling() *Thread {
+	for _, th := range t.core.tap.Threads {
+		if th.Index != t.idx {
+			return t.core.thread(t.s, th.Index, th.Name)
+		}
+	}
+	return nil
 }
 
 // Thread is one hardware thread of a big core.
@@ -124,8 +248,11 @@ type Thread struct {
 	bps              [4]*breakpoint
 	usedSlot         [4]bool
 	stepping         bool
-	progDR7, progICE uint64 // program's own values while we use them
+	progDR7, progICE uint64    // program's own values while we use them
+	progDR           [4]uint64 // program's DR0-DR3 in slots the debugger used
 	progSaved        bool
+	progDE           *uint64 // program's CR4.DE while I/O breakpoints need it set
+	stopRIP          uint64  // RIP when the thread entered probe mode
 }
 
 func (t *Thread) Name() string { return t.name }
@@ -227,84 +354,124 @@ func (t *Thread) trigger(on bool) error {
 	return nil
 }
 
+// preqAll is core_preq_enable with every core enabled, the value OpenIPC
+// writes back after a halt and on resume.
+const preqAll = 0xff
+
+// preqDriver drives the probe-mode request (PREQ) pin.
+type preqDriver interface{ SetPREQ(assert bool) error }
+
+func (t *Thread) preq(assert bool) error {
+	pd, ok := t.s.Drv.(preqDriver)
+	if !ok {
+		return errors.New("bigcore: probe driver cannot drive PREQ")
+	}
+	return pd.SetPREQ(assert)
+}
+
+// wakeReq sets core_preq_enable in the uncore's pcode_wake_req, and with
+// flow also probe_mode_pcode_flow, leaving the other fields as they are.
+func (t *Thread) wakeReq(preqEnable uint64, flow bool) error {
+	wake, _ := t.core.uncore.Register("pcode_wake_req")
+	_, err := t.s.Modify(t.core.uncore, wake, func(v *big.Int) *big.Int {
+		if flow {
+			v = wake.MustField("probe_mode_pcode_flow").Set(v, 1)
+		}
+		return wake.MustField("core_preq_enable").Set(v, preqEnable)
+	})
+	return err
+}
+
+// releaseArbitration gives up the probe's ownership of the uncore TAP
+// network at the end of a halt or resume.
+func (t *Thread) releaseArbitration() error {
+	return t.s.ReleaseCondition(kblspt.CpuTapArbitrated)
+}
+
+// Halt stops the thread's core. A running core is stopped with OpenIPC's
+// sequence: pcode_wake_req gets the pcode flow bit and only this core's
+// PREQ enable, PREQ is asserted until the core's state is saved, then
+// core_preq_enable goes back to all cores and arbitration is released.
 func (t *Thread) Halt() (runctl.StopInfo, error) {
 	c := t.core
-	if !c.halted {
+	if c.halted {
+		if err := t.prepare(); err != nil {
+			return runctl.StopInfo{}, err
+		}
+		return runctl.StopInfo{PC: t.pc(), Reason: "halt request"}, nil
+	}
+	st, err := t.tapStatus()
+	if err != nil {
+		return runctl.StopInfo{}, err
+	}
+	if t.inPM(st) && (t.Armed() || t.stepping) {
+		return t.stopped() // stopped at a breakpoint or step we armed
+	}
+	redir := uint64(tsRedirT0)
+	if t.idx == 1 {
+		redir = tsRedirT1
+	}
+	if t.inPM(st) && st&redir != 0 {
+		// Stopped by a debug exception redirected into probe mode, armed
+		// by an earlier session: take over and drop the debug settings
+		// (trap flag, redirection) so it doesn't trap again on resume.
+		if err := t.wholeCore(); err != nil {
+			return runctl.StopInfo{}, err
+		}
+		c.halted = true
+		if err := t.prepare(); err != nil {
+			return runctl.StopInfo{}, err
+		}
+		t.rflags &^= eflTF | eflRF
+		t.icectl &^= iceIR
+		t.progDR7, t.progICE = t.dr7, t.icectl
+		return runctl.StopInfo{PC: t.pc(), Reason: "debug exception (taken over)"}, nil
+	}
+	if t.inPM(st) {
+		// Requested probe mode (not a debug exception) by someone else:
+		// nothing has been changed yet, so take it over as a halt.
+		if err := t.wholeCore(); err != nil {
+			return runctl.StopInfo{}, err
+		}
+		c.halted = true
+		if err := t.prepare(); err != nil {
+			return runctl.StopInfo{}, err
+		}
+		return runctl.StopInfo{PC: t.pc(), Reason: "already in probe mode"}, nil
+	}
+	if err := t.wakeReq(1<<c.id, true); err != nil {
+		return runctl.StopInfo{}, err
+	}
+	if err := t.preq(true); err != nil {
+		return runctl.StopInfo{}, err
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
 		st, err := t.tapStatus()
 		if err != nil {
 			return runctl.StopInfo{}, err
 		}
-		if t.inPM(st) && (t.Armed() || t.stepping) {
-			return t.stopped() // stopped at a breakpoint or step we armed
+		if st&(tsPMRdyT0|tsDisabledT0) != 0 && st&(tsPMRdyT1|tsDisabledT1) != 0 {
+			break
 		}
-		redir := uint64(tsRedirT0)
-		if t.idx == 1 {
-			redir = tsRedirT1
+		if time.Now().After(deadline) {
+			err := fmt.Errorf("bigcore: core %d did not enter probe mode (tap_status %#x); is debug consent enabled?", c.id, st)
+			return runctl.StopInfo{}, errors.Join(err, t.preq(false), t.wakeReq(preqAll, false), t.releaseArbitration())
 		}
-		if t.inPM(st) && st&redir != 0 {
-			// Stopped by a debug exception redirected into probe mode, armed
-			// by an earlier session: take over and drop the debug settings
-			// (trap flag, redirection) so it doesn't trap again on resume.
-			if err := t.wholeCore(); err != nil {
-				return runctl.StopInfo{}, err
-			}
-			c.halted = true
-			if err := t.prepare(); err != nil {
-				return runctl.StopInfo{}, err
-			}
-			t.rflags &^= eflTF | eflRF
-			t.icectl &^= iceIR
-			t.progDR7, t.progICE = t.dr7, t.icectl
-			return runctl.StopInfo{PC: t.pc(), Reason: "debug exception (taken over)"}, nil
-		}
-		if t.inPM(st) {
-			// Requested probe mode (not a debug exception) by someone else:
-			// nothing has been changed yet, so take it over as a halt.
-			if err := t.wholeCore(); err != nil {
-				return runctl.StopInfo{}, err
-			}
-			c.halted = true
-			if err := t.prepare(); err != nil {
-				return runctl.StopInfo{}, err
-			}
-			return runctl.StopInfo{PC: t.pc(), Reason: "already in probe mode"}, nil
-		}
-		// Let pcode handle the probe-mode request for this core.
-		wake, _ := c.uncore.Register("pcode_wake_req")
-		old, err := t.s.Modify(c.uncore, wake, func(v *big.Int) *big.Int {
-			v = wake.MustField("probe_mode_pcode_flow").Set(v, 1)
-			pre := wake.MustField("core_preq_enable")
-			return pre.Set(v, pre.Get(v)|1<<c.id)
-		})
-		if err != nil {
-			return runctl.StopInfo{}, err
-		}
-		c.wakeOld = old
-		if _, err := t.s.IRDR(c.tap, irProbeMode, 4, big.NewInt(2)); err != nil {
-			return runctl.StopInfo{}, err
-		}
-		deadline := time.Now().Add(time.Second)
-		for {
-			st, err := t.tapStatus()
-			if err != nil {
-				return runctl.StopInfo{}, err
-			}
-			rdy := st&(tsPMRdyT0|tsDisabledT0) != 0 && st&(tsPMRdyT1|tsDisabledT1) != 0
-			if rdy {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.s.IRDR(c.tap, irProbeMode, 4, big.NewInt(0))
-				return runctl.StopInfo{}, fmt.Errorf("bigcore: core %d did not enter probe mode (tap_status %#x); is debug consent enabled?", c.id, st)
-			}
-			time.Sleep(time.Millisecond)
-		}
-		c.halted = true
+		time.Sleep(time.Millisecond)
 	}
+	c.halted = true
 	if err := t.prepare(); err != nil {
 		return runctl.StopInfo{}, err
 	}
-	return runctl.StopInfo{PC: t.pc(), Reason: "halt request"}, nil
+	si := runctl.StopInfo{PC: t.pc(), Reason: "halt request; " + t.prior()}
+	if err := t.preq(false); err != nil {
+		return si, err
+	}
+	if err := t.wakeReq(preqAll, false); err != nil {
+		return si, err
+	}
+	return si, t.releaseArbitration()
 }
 
 // prepare saves this thread's state and sets up probe-mode execution.
@@ -376,6 +543,7 @@ func (t *Thread) prepare() error {
 		return fmt.Errorf("bigcore: %s: saving state: %w", t.name, err)
 	}
 	copy(t.scp[1:], vals[0:10])
+	t.stopRIP = t.scp[7]
 	t.rbx, t.rflags, t.cpl, t.dr6, t.icectl, t.dr7 = vals[10], vals[11], vals[12], vals[13], vals[14], vals[15]
 	if !t.progSaved {
 		t.progDR7, t.progICE, t.progSaved = t.dr7, t.icectl, true
@@ -453,18 +621,18 @@ func (t *Thread) synthEntry() (uint64, error) {
 
 // restore puts back everything prepare saved, in the reference order.
 func (t *Thread) restore() error {
+	if err := t.debugRegs(); err != nil {
+		return err
+	}
 	if err := t.leaveFlat64(); err != nil {
 		return err
 	}
-	dr7, ice, rflags, err := t.debugOverlay()
-	if err != nil {
-		return err
-	}
+	dr7, ice, rflags := t.debugOverlay()
 	dr6 := uint64(0xffff0ff0)
 	if t.dr6Set {
 		dr6 = t.dr6
 	}
-	_, err = t.run(func(p *prog, e enc) {
+	_, err := t.run(func(p *prog, e enc) {
 		p.exec(e.movImm(rAX, dr6), e.movToDR(6, rAX))
 		p.exec(e.movImm(rAX, dr7), e.movToDR(7, rAX))
 		p.exec(e.movR32Imm(rCX, msrICECTLPMR), e.movR32Imm(rAX, uint32(ice)), e.movR32Imm(rDX, uint32(ice>>32)), e.wrmsr())
@@ -479,36 +647,80 @@ func (t *Thread) restore() error {
 	return err
 }
 
-func (t *Thread) Resume() error {
+// Resume restores the core's state and lets it run, with OpenIPC's
+// sequence: PREQ deasserted, core_preq_enable back to all cores (or only
+// this core, with the pcode flow bit, while breakpoints or stepping are
+// armed, so that a debug exception stops only this core), then probe_mode
+// cleared and arbitration released.
+func (t *Thread) Resume() error { return t.resume(false) }
+
+// resume lets the core run. With step, only this thread runs: as in
+// OpenIPC's ReleaseTargetedThread step mode, the sibling's state is saved
+// and its ICECTLPMR "remain in probe mode" bit (17) is set, so it stays in
+// probe mode; a later full resume restores it and clears the bit.
+func (t *Thread) resume(step bool) error {
 	c := t.core
 	if !c.halted {
 		return fmt.Errorf("bigcore: %s is not halted (by us)", t.name)
 	}
-	for _, th := range c.threads {
+	if step && t.stepMode() == StepAll {
+		return t.resumeAll()
+	}
+	run := c.threads
+	if step {
+		run = map[int]*Thread{t.idx: t}
+		if sib := t.sibling(); sib != nil {
+			st, err := t.tapStatus()
+			if err != nil {
+				return err
+			}
+			disabled := uint64(tsDisabledT0)
+			if sib.idx == 1 {
+				disabled = tsDisabledT1
+			}
+			if st&disabled == 0 {
+				if err := sib.prepare(); err != nil {
+					return err
+				}
+				if _, err := sib.run(func(p *prog, e enc) {
+					p.exec(e.movR32Imm(rCX, msrICECTLPMR), e.rdmsr(), e.orEAXImm(iceRemInPM), e.wrmsr())
+				}); err != nil {
+					return fmt.Errorf("bigcore: %s: keeping it in probe mode: %w", sib.name, err)
+				}
+			}
+		}
+	}
+	for _, th := range run {
 		if err := th.restore(); err != nil {
 			return fmt.Errorf("bigcore: %s: restoring state: %w (core left halted)", th.name, err)
+		}
+	}
+	armed := false
+	for _, th := range run {
+		armed = armed || th.Armed() || th.stepping
+	}
+	if err := t.preq(false); err != nil {
+		return err
+	}
+	if err := t.wakeReq(preqAll, false); err != nil {
+		return err
+	}
+	if armed {
+		if err := t.wakeReq(1<<c.id, true); err != nil {
+			return err
 		}
 	}
 	if _, err := t.s.IRDR(c.tap, irProbeMode, 4, big.NewInt(0)); err != nil {
 		return err
 	}
-	armed := false
-	for _, th := range c.threads {
+	for _, th := range run {
 		th.prepared, th.dr6Set = false, false
-		armed = armed || th.Armed() || th.stepping
+		delete(c.threads, th.idx)
 	}
-	c.threads = map[int]*Thread{}
 	c.halted = false
-	if c.wakeOld != nil {
-		wake, _ := c.uncore.Register("pcode_wake_req")
-		if _, err := t.s.Exchange(c.uncore, wake, c.wakeOld); err != nil {
-			return err
-		}
-		c.wakeOld = nil
-	}
 	t.trigger(false)
 	if armed {
-		return nil // may stop again right away; Wait reports it
+		return t.releaseArbitration() // may stop again right away; Wait reports it
 	}
 	deadline := time.Now().Add(time.Second)
 	for {
@@ -517,13 +729,91 @@ func (t *Thread) Resume() error {
 			return err
 		}
 		if !h {
-			return nil
+			return t.releaseArbitration()
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("bigcore: %s did not leave probe mode", t.name)
 		}
 		time.Sleep(time.Millisecond)
 	}
+}
+
+// resumeAll releases the package for a step in OpenIPC's ReleaseAllThreads
+// mode: every core this session holds is restored, core_preq_enable is set
+// to all cores with the pcode flow bit, and all cores leave probe mode
+// through the uncore's parallel probe_mode scan. The debug exception after
+// the step then stops every core (see holdStopped).
+func (t *Thread) resumeAll() error {
+	pkg, err := t.packageCores()
+	if err != nil {
+		return err
+	}
+	for _, c := range pkg {
+		if !c.halted {
+			continue
+		}
+		for _, th := range c.threads {
+			if err := th.restore(); err != nil {
+				return fmt.Errorf("bigcore: %s: restoring state: %w (core left halted)", th.name, err)
+			}
+		}
+	}
+	if err := t.preq(false); err != nil {
+		return err
+	}
+	if err := t.wakeReq(preqAll, false); err != nil {
+		return err
+	}
+	if err := t.wakeReq(preqAll, true); err != nil {
+		return err
+	}
+	if err := t.s.Do(t.core.uncore, func(o *tapnet.Ops) {
+		o.IRDR(irParallelCoreIR, 8, big.NewInt(irProbeMode))
+		o.IRDR(irParallelCoreDR, 12, new(big.Int))
+	}); err != nil {
+		return err
+	}
+	for _, c := range pkg {
+		for _, th := range c.threads {
+			th.prepared, th.dr6Set = false, false
+		}
+		c.threads = map[int]*Thread{}
+		c.halted = false
+	}
+	t.trigger(false)
+	return t.releaseArbitration()
+}
+
+// holdStopped records, after an all-threads step, the other cores that
+// the step's debug exception stopped: this session now holds them (their
+// state is saved when first accessed).
+func (t *Thread) holdStopped() error {
+	pkg, err := t.packageCores()
+	if err != nil {
+		return err
+	}
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for _, c := range pkg {
+		if c == t.core || c.halted {
+			continue
+		}
+		for {
+			v, err := t.s.IRDR(c.tap, irTapStatus, 37, nil)
+			if err != nil {
+				return err
+			}
+			st := v.Uint64()
+			if st&(tsPMRdyT0|tsDisabledT0) != 0 && st&(tsPMRdyT1|tsDisabledT1) != 0 {
+				c.halted = true
+				break
+			}
+			if time.Now().After(deadline) {
+				break // still running
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	return nil
 }
 
 // pc returns the linear address of the next instruction (CS base + RIP).
@@ -555,7 +845,7 @@ func (t *Thread) Registers() []string {
 	if t.core.halted && !t.prepared {
 		t.prepare() // the register set depends on the thread's mode
 	}
-	if t.prepared && t.mode != 64 {
+	if t.prepared && !t.longMode() {
 		var out []string
 		for _, r := range regOrder {
 			if !only64[r] {
@@ -565,6 +855,21 @@ func (t *Thread) Registers() []string {
 		return out
 	}
 	return regOrder
+}
+
+// longMode reports whether the thread was in long mode (64-bit or
+// compatibility mode) at entry: R8-R15 and CR8 exist.
+func (t *Thread) longMode() bool { return t.entry&(1<<10) != 0 }
+
+// maxProcMode lists the registers OpenIPC only accesses after switching the
+// thread to the flat 64-bit environment (its "max proc mode" state).
+func maxProcMode(name string) bool {
+	switch name {
+	case "rsp", "rbp", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
+		"cr2", "cr3", "cr4", "cr8", "dr0", "dr1", "dr2", "dr3":
+		return true
+	}
+	return len(name) > 4 && name[len(name)-4:] == "base"
 }
 
 func (t *Thread) need() error {
@@ -604,6 +909,11 @@ func (t *Thread) ReadRegister(name string) (uint64, error) {
 	case "cr0":
 		return t.scp[9], nil // saved by the microcode, reloaded on exit
 	}
+	if maxProcMode(name) {
+		if err := t.enterFlat64(); err != nil {
+			return 0, err
+		}
+	}
 	if f := t.flat; f != nil {
 		switch name {
 		case "rsi":
@@ -622,19 +932,22 @@ func (t *Thread) ReadRegister(name string) (uint64, error) {
 		}
 	}
 	if r, ok := gpr[name]; ok {
-		if r >= 8 && t.mode != 64 {
-			return 0, fmt.Errorf("bigcore: %s only exists in 64-bit mode", name)
+		if r >= 8 && !t.longMode() {
+			return 0, fmt.Errorf("bigcore: %s only exists in long mode", name)
 		}
 		return t.one(func(p *prog, e enc) { p.exec(e.movRR(rAX, r), e.movR32Imm(rCX, msrProbeGPReg), e.rdmsr()) })
 	}
 	var n int
 	if _, err := fmt.Sscanf(name, "cr%d", &n); err == nil && (n <= 4 || n == 8) && n != 1 {
-		if n == 8 && t.mode != 64 {
-			return 0, errors.New("bigcore: cr8 only exists in 64-bit mode")
+		if n == 8 && !t.longMode() {
+			return 0, errors.New("bigcore: cr8 only exists in long mode")
 		}
 		return t.one(func(p *prog, e enc) { p.exec(e.movFromCR(rAX, n), e.movR32Imm(rCX, msrProbeGPReg), e.rdmsr()) })
 	}
 	if _, err := fmt.Sscanf(name, "dr%d", &n); err == nil && n <= 3 {
+		if t.usedSlot[n] {
+			return t.progDR[n], nil // the live register is the debugger's
+		}
 		return t.one(func(p *prog, e enc) { p.exec(e.movFromDR(rAX, n), e.movR32Imm(rCX, msrProbeGPReg), e.rdmsr()) })
 	}
 	if len(name) > 4 && name[len(name)-4:] == "base" {
@@ -665,6 +978,12 @@ func (t *Thread) ReadRegisters(names []string) ([]uint64, error) {
 func (t *Thread) readMSR(index uint32) (uint64, error) {
 	if err := t.need(); err != nil {
 		return 0, err
+	}
+	if index == msrPEBSEnable {
+		if err := t.enterFlat64(); err != nil {
+			return 0, err
+		}
+		return t.flat.scp13, nil
 	}
 	if f := t.flat; f != nil {
 		switch index {
@@ -737,6 +1056,11 @@ func (t *Thread) WriteRegister(name string, v uint64) error {
 }
 
 func (t *Thread) writeLive(name string, v uint64) error {
+	if maxProcMode(name) {
+		if err := t.enterFlat64(); err != nil {
+			return err
+		}
+	}
 	if f := t.flat; f != nil {
 		switch name {
 		case "rsi":
@@ -754,8 +1078,8 @@ func (t *Thread) writeLive(name string, v uint64) error {
 		}
 	}
 	if r, ok := gpr[name]; ok {
-		if r >= 8 && t.mode != 64 {
-			return fmt.Errorf("bigcore: %s only exists in 64-bit mode", name)
+		if r >= 8 && !t.longMode() {
+			return fmt.Errorf("bigcore: %s only exists in long mode", name)
 		}
 		_, err := t.run(func(p *prog, e enc) { p.exec(e.movImm(r, v)) })
 		return err
@@ -766,6 +1090,10 @@ func (t *Thread) writeLive(name string, v uint64) error {
 		return err
 	}
 	if _, err := fmt.Sscanf(name, "dr%d", &n); err == nil && n <= 3 {
+		t.progDR[n] = v
+		if t.usedSlot[n] {
+			return nil // written on resume once the debugger no longer uses the slot
+		}
 		_, err := t.run(func(p *prog, e enc) { p.exec(e.movImm(rAX, v), e.movToDR(n, rAX)) })
 		return err
 	}
@@ -775,6 +1103,13 @@ func (t *Thread) writeLive(name string, v uint64) error {
 func (t *Thread) writeMSR(index uint32, v uint64) error {
 	if err := t.need(); err != nil {
 		return err
+	}
+	if index == msrPEBSEnable {
+		if err := t.enterFlat64(); err != nil {
+			return err
+		}
+		t.flat.scp13 = v
+		return nil
 	}
 	switch {
 	case index == msrICECTLPMR:
@@ -843,6 +1178,14 @@ func (t *Thread) SetBreakpoint(slot int, addr uint64, kind string, length int) e
 	} else if length != 1 && length != 2 && length != 4 && length != 8 || addr%uint64(length) != 0 {
 		return errors.New("bigcore: data breakpoints need an aligned length of 1, 2, 4 or 8")
 	}
+	if !t.usedSlot[slot] {
+		// Keep the program's own address to put back once the slot is free.
+		v, err := t.ReadRegister(fmt.Sprintf("dr%d", slot))
+		if err != nil {
+			return err
+		}
+		t.progDR[slot] = v
+	}
 	t.bps[slot] = &breakpoint{addr, rw, length}
 	t.usedSlot[slot] = true
 	return nil
@@ -867,7 +1210,7 @@ func (t *Thread) Armed() bool {
 }
 
 // debugOverlay returns the DR7, ICECTLPMR and RFLAGS values to resume with.
-func (t *Thread) debugOverlay() (dr7, ice, rflags uint64, err error) {
+func (t *Thread) debugOverlay() (dr7, ice, rflags uint64) {
 	// Never leave debugger-only settings behind: the program doesn't use
 	// the redirect/guard bits, and slots we used get their enables cleared.
 	dr7, ice, rflags = t.dr7, t.icectl&^(iceRemInPM|iceIR|icePDR), t.rflags
@@ -893,36 +1236,100 @@ func (t *Thread) debugOverlay() (dr7, ice, rflags uint64, err error) {
 	if t.stepping {
 		rflags |= eflTF
 	}
-	if bits != 0 {
-		// The debug registers are live: program the addresses now.
-		_, err = t.run(func(p *prog, e enc) {
-			for i, bp := range t.bps {
-				if bp != nil {
-					p.exec(e.movImm(rAX, bp.addr), e.movToDR(i, rAX))
-				}
-			}
-		})
-	}
 	return
 }
 
-// Step executes one instruction of this thread (its sibling runs freely
-// meanwhile) and stops again.
+// debugRegs programs DR0-DR3 (breakpoint addresses, or the program's own
+// values in slots the debugger used before) and CR4.DE (set while I/O
+// breakpoints are armed, then back to the program's value). Both are
+// written in the flat 64-bit environment, where OpenIPC accesses them.
+func (t *Thread) debugRegs() error {
+	var dr [4]*uint64
+	io := false
+	for i, bp := range t.bps {
+		switch {
+		case bp != nil:
+			dr[i] = &bp.addr
+			io = io || bp.rw == 2
+		case t.usedSlot[i]:
+			dr[i] = &t.progDR[i]
+		}
+	}
+	if dr == [4]*uint64{} && !io && t.progDE == nil {
+		return nil
+	}
+	if err := t.enterFlat64(); err != nil {
+		return err
+	}
+	const cr4DE = 1 << 3
+	switch {
+	case io && t.progDE == nil:
+		de := t.flat.cr4 & cr4DE
+		t.progDE = &de
+		t.flat.cr4 |= cr4DE
+	case !io && t.progDE != nil:
+		t.flat.cr4 = t.flat.cr4&^cr4DE | *t.progDE
+		t.progDE = nil
+	}
+	_, err := t.run(func(p *prog, e enc) {
+		for i, a := range dr {
+			if a != nil {
+				p.exec(e.movImm(rAX, *a), e.movToDR(i, rAX))
+			}
+		}
+	})
+	return err
+}
+
+// Step executes one instruction of this thread and stops again. In
+// StepTargeted mode the sibling thread stays in probe mode and other cores
+// are not affected; in StepAll mode every core runs during the step and
+// all of them are held afterwards.
 func (t *Thread) Step() (runctl.StopInfo, error) {
 	if err := t.need(); err != nil {
 		return runctl.StopInfo{}, err
 	}
+	if noStep(t.entry>>16&0xff) && t.scp[7] == t.stopRIP {
+		return runctl.StopInfo{}, fmt.Errorf("bigcore: %s cannot be stepped while in %s (set rip or let it run first)", t.name, t.prior())
+	}
+	// A single step is one instruction only with DEBUGCTL.BTF clear.
+	dbgctl, err := t.ReadMSR(msrDebugCtl)
+	if err != nil {
+		return runctl.StopInfo{}, err
+	}
+	btf := dbgctl&debugCtlBTF != 0
+	if btf {
+		if err := t.WriteMSR(msrDebugCtl, dbgctl&^debugCtlBTF); err != nil {
+			return runctl.StopInfo{}, err
+		}
+	}
 	t.stepping = true
-	if err := t.Resume(); err != nil {
+	if err := t.resume(true); err != nil {
 		t.stepping = false
 		return runctl.StopInfo{}, err
 	}
 	si, stopped, err := t.Wait(time.Second)
+	if err == nil && stopped && t.stepMode() == StepAll {
+		err = t.holdStopped()
+	}
+	if err == nil && stopped && btf {
+		err = t.WriteMSR(msrDebugCtl, dbgctl)
+	}
 	if err != nil {
 		return si, err
 	}
 	if !stopped {
-		if _, herr := t.Halt(); herr != nil {
+		_, herr := t.Halt()
+		// The step never completed: drop what it set up (TF and RF are in
+		// the RFLAGS saved by the halt).
+		t.stepping = false
+		if herr == nil {
+			t.rflags &^= eflTF | eflRF
+			if btf {
+				herr = t.WriteMSR(msrDebugCtl, dbgctl)
+			}
+		}
+		if herr != nil {
 			return si, fmt.Errorf("bigcore: %s did not stop after a step, and halting failed: %v", t.name, herr)
 		}
 		return si, fmt.Errorf("bigcore: %s did not stop after a step; halted it", t.name)
@@ -953,36 +1360,19 @@ func (t *Thread) Wait(timeout time.Duration) (runctl.StopInfo, bool, error) {
 	}
 }
 
-// wholeCore makes sure every thread of the core is in probe mode: the
+// wholeCore checks that every thread of the core is in probe mode: the
 // core only signals probe-mode ready (the trigger used to wait for
-// instruction completion) once all of its threads are.
+// instruction completion) once all of its threads are. A debug exception
+// redirected into probe mode stops the whole core.
 func (t *Thread) wholeCore() error {
 	st, err := t.tapStatus()
 	if err != nil {
 		return err
 	}
-	all := func(st uint64) bool {
-		return st&(tsPMRdyT0|tsDisabledT0) != 0 && st&(tsPMRdyT1|tsDisabledT1) != 0
+	if st&(tsPMRdyT0|tsDisabledT0) == 0 || st&(tsPMRdyT1|tsDisabledT1) == 0 {
+		return fmt.Errorf("bigcore: core %d: not all threads are in probe mode (tap_status %#x)", t.core.id, st)
 	}
-	if all(st) {
-		return nil
-	}
-	if _, err := t.s.IRDR(t.core.tap, irProbeMode, 4, big.NewInt(2)); err != nil {
-		return err
-	}
-	deadline := time.Now().Add(time.Second)
-	for {
-		if st, err = t.tapStatus(); err != nil {
-			return err
-		}
-		if all(st) {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("bigcore: core %d: sibling thread did not enter probe mode (tap_status %#x)", t.core.id, st)
-		}
-		time.Sleep(time.Millisecond)
-	}
+	return nil
 }
 
 // stopped takes over a core that entered probe mode by itself.
@@ -1006,7 +1396,7 @@ func (t *Thread) stopped() (runctl.StopInfo, error) {
 	case t.dr6&(1<<14) != 0 && stepping:
 		reason = "single step"
 	default:
-		reason = fmt.Sprintf("probe-mode entry (prior state %#x)", t.entry>>16&0xff)
+		reason = t.prior()
 	}
 	// Hide what the debugger caused.
 	if stepping {

@@ -73,14 +73,8 @@ func (t *Thread) enterFlat64() error {
 			p.exec(e.movR8Imm(rCL, msrProbeToPDR), e.movR8Imm(rCH, 0), e.movR8Imm(rAL, byte(i)), e.movR8Imm(rAH, 0), e.rdmsr())
 			p.pdr()
 		}
-		for _, r := range []int{rSI, rDI} {
-			p.exec(e.movRR(rAX, r), e.movR32Imm(rCX, msrProbeGPReg), e.rdmsr())
-			p.pdr()
-		}
-		for _, cr := range []int{3, 4} {
-			p.exec(e.movFromCR(rAX, cr), e.movR32Imm(rCX, msrProbeGPReg), e.rdmsr())
-			p.pdr()
-		}
+		p.exec(e.movFromCR(rAX, 4), e.movR32Imm(rCX, msrProbeGPReg), e.rdmsr())
+		p.pdr()
 		for _, s := range []int{segCS, segGDT, segIDT, segTR, segLDT} {
 			p.exec(e.movR32Imm(rCX, msrProbeSeg), e.movR32Imm(rAX, uint32(s)), e.rdmsr())
 			p.pdr()
@@ -99,11 +93,11 @@ func (t *Thread) enterFlat64() error {
 		return fmt.Errorf("bigcore: %s: saving state for memory access: %w", t.name, err)
 	}
 	f.scp11, f.scp12, f.scp13 = vals[0], vals[1], vals[2]
-	f.rsi, f.rdi, f.cr3, f.cr4 = vals[3], vals[4], vals[5], vals[6]
+	f.cr4 = vals[3]
 	for i, s := range []int{segCS, segGDT, segIDT, segTR, segLDT} {
-		f.seg[s] = [2]uint64{vals[7+2*i], vals[8+2*i]}
+		f.seg[s] = [2]uint64{vals[4+2*i], vals[5+2*i]}
 	}
-	f.seg[segSS] = [2]uint64{vals[17], vals[18]}
+	f.seg[segSS] = [2]uint64{vals[14], vals[15]}
 	t.flat = f // from here on, leaveFlat64 must run before resuming
 
 	lma := t.entry&(1<<10) != 0
@@ -144,6 +138,19 @@ func (t *Thread) enterFlat64() error {
 	if err != nil {
 		return fmt.Errorf("bigcore: %s: switching to 64-bit mode: %w", t.name, err)
 	}
+	// RSI, RDI and CR3 in full, now that 64-bit encodings apply.
+	vals, err = t.run(func(p *prog, e enc) {
+		for _, r := range []int{rSI, rDI} {
+			p.exec(e.movRR(rAX, r), e.movR32Imm(rCX, msrProbeGPReg), e.rdmsr())
+			p.pdr()
+		}
+		p.exec(e.movFromCR(rAX, 3), e.movR32Imm(rCX, msrProbeGPReg), e.rdmsr())
+		p.pdr()
+	})
+	if err != nil {
+		return fmt.Errorf("bigcore: %s: saving state for memory access: %w", t.name, err)
+	}
+	f.rsi, f.rdi, f.cr3 = vals[0], vals[1], vals[2]
 	return nil
 }
 
@@ -231,11 +238,28 @@ func split(addr uint64, n int) (out [][2]int) {
 
 const memChunk = 32 // accesses per JTAG transaction
 
+// checkAddr rejects addresses in the non-canonical range unless CR4.LA57
+// is set, as OpenIPC does for physical accesses.
+func (t *Thread) checkAddr(addr uint64, n int) error {
+	if t.flat.cr4&(1<<12) != 0 {
+		return nil
+	}
+	for _, a := range []uint64{addr, addr + uint64(n) - 1} {
+		if a > 0x7fffffffffff && a < 0xffff800000000000 {
+			return fmt.Errorf("bigcore: address %#x is beyond 48 bits and the thread is not using 5-level paging", a)
+		}
+	}
+	return nil
+}
+
 func (t *Thread) ReadMemory(addr uint64, buf []byte) error {
 	if err := t.need(); err != nil {
 		return err
 	}
 	if err := t.enterFlat64(); err != nil {
+		return err
+	}
+	if err := t.checkAddr(addr, len(buf)); err != nil {
 		return err
 	}
 	acc := split(addr, len(buf))
@@ -269,6 +293,9 @@ func (t *Thread) WriteMemory(addr uint64, buf []byte) error {
 		return err
 	}
 	if err := t.enterFlat64(); err != nil {
+		return err
+	}
+	if err := t.checkAddr(addr, len(buf)); err != nil {
 		return err
 	}
 	acc := split(addr, len(buf))
