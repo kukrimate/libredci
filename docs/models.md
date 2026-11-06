@@ -165,8 +165,10 @@ when idle), `probe_mode` (`0x86`, 4 bits), `pdr_t0`/`pdr_t1` (`0x84`/`0x85`,
 ### Uncore CSR and MMIO access through the VCU
 
 The uncore's validation control unit (VCU) executes commands posted to a
-mailbox on the `cpu` TAP. It only needs `cpu_tap_arbitrated`; no core has to
-be halted.
+mailbox on the `cpu` TAP. It needs `cpu_tap_arbitrated` and
+`cpu_cores_awake`; no core has to be halted. With only the package awake,
+commands complete with "timeout"; with the package asleep, the mailbox reads
+0.
 
 * `vcu_mailbox` (IR `0xc9`, 65 bits): bit 1 run/busy, 16:9 index, 32:17
   opcode, 64:33 data. Written with an exchange scan.
@@ -186,6 +188,10 @@ be halted.
 
 "Local CSR" is the system agent's own PCI configuration space; the device
 field is ignored. Examples on KBL-R U: offset `0x0` = `0x59148086`, `0x48`
-(MCHBAR) = `0xfed10001`, `0x60` (PCIEXBAR) = `0xe0000001`. MMIO reaches
-system-agent devices only, and decodes the device number partially (device
-`0x16` aliases device 2, the iGPU). PCH devices are refused with "illegal".
+(MCHBAR) = `0xfed10001`, `0x60` (PCIEXBAR) = `0xe0000001`.
+
+MMIO on the T480 (KBL-R U): BAR 0 is MCHBAR (offset `0x0` reads the same as
+physical `0xfed10000`, `0x5da8` as `0xfed15da8`). Devices 0, 2, 4 and 6
+all give the same results, so device bits 2:1 are ignored; odd devices, a
+non-zero function and BAR 2 are refused with "illegal". BAR 1 offset 0
+reads `0x10`; what BAR 1 maps is unknown.

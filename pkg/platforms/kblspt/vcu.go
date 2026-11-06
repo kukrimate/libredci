@@ -10,7 +10,9 @@ import (
 
 // The uncore's VCU (validation control unit) runs commands posted to a
 // mailbox on the uncore TAP. Through it the probe can read and write
-// uncore-local CSRs and device MMIO without halting any core.
+// uncore-local CSRs and device MMIO without halting any core. Its commands
+// need the cores awake: with only the package awake they time out, and
+// with the package asleep the mailbox reads 0.
 //
 // Mailbox (IR 0xc9, 65 bits): bit 1 run/busy, 16:9 index, 32:17 opcode,
 // 64:33 data. The reply is read from IR 0xcb (same layout): run/busy
@@ -18,10 +20,10 @@ import (
 
 var (
 	regVCUMailbox = &model.Register{Name: "vcu_mailbox", IR: 0xc9, Bits: 65, Access: model.ReadWrite,
-		Requires: []string{CpuTapArbitrated},
+		Requires: []string{CpuTapArbitrated, CpuCoresAwake},
 		Fields:   []model.Field{bit("run_busy", 1), f("index", 16, 9), f("opcode", 32, 17), f("data", 64, 33)}}
 	regVCUMailboxRead = &model.Register{Name: "vcu_mailbox_read", IR: 0xcb, Bits: 65, Access: model.ReadWrite,
-		ZeroScanRead: true, Requires: []string{CpuTapArbitrated},
+		ZeroScanRead: true, Requires: []string{CpuTapArbitrated, CpuCoresAwake},
 		Fields: []model.Field{bit("run_busy", 1), f("index", 16, 9), f("opcode", 32, 17), f("data", 64, 33)}}
 )
 
@@ -83,10 +85,11 @@ func vcuCommand(t model.Target, opcode, data uint32) (uint32, error) {
 	return 0, fmt.Errorf("vcu: command %#x failed: %s", opcode, name)
 }
 
-// vcuAddr packs a CSR/MMIO address. size is 1, 2, 4 or 8 bytes.
+// vcuAddr packs a CSR/MMIO address. size is 1, 2, 4 or 8 bytes; the
+// device field is 3 bits wide.
 func vcuAddr(dev, fn, bar int, offset uint16, size int) (uint32, error) {
 	lc, ok := map[int]uint32{1: 0, 2: 1, 4: 2, 8: 3}[size]
-	if !ok || dev < 0 || dev > 31 || fn < 0 || fn > 7 || bar < 0 || bar > 3 {
+	if !ok || dev < 0 || dev > 7 || fn < 0 || fn > 7 || bar < 0 || bar > 3 {
 		return 0, fmt.Errorf("vcu: bad address (dev %d fn %d bar %d size %d)", dev, fn, bar, size)
 	}
 	return uint32(offset)<<16 | lc<<14 | uint32(dev)<<11 | uint32(fn)<<8 | uint32(bar)<<2, nil
