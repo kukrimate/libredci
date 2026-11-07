@@ -12,7 +12,9 @@ func TestIdentify(t *testing.T) {
 	}{
 		{PCHs, 0x9a506013, "spt"}, // SPT-LP C1
 		{PCHs, 0x0a507013, ""},    // SPT-H
+		{PCHs, 0x000e6113, "adp"},
 		{CPUs, 0xaa76d013, "kbl"},
+		{CPUs, 0x400f6113, "adl"},
 		{CPUs, 0, ""},
 	} {
 		got := ""

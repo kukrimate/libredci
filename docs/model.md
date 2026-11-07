@@ -18,7 +18,9 @@ through a VCU.
 | Chip | Package | Description |
 |---|---|---|
 | Sunrise Point-LP PCH | `pkg/pch/spt` | [pch/spt.md](pch/spt.md) |
+| Alder Point-S PCH | `pkg/pch/adp` | [pch/adp.md](pch/adp.md) |
 | Kaby Lake U/Y/R CPU | `pkg/cpu/kbl` | [cpu/kbl.md](cpu/kbl.md) |
+| Alder Lake-S CPU | `pkg/cpu/adl` | [cpu/adl.md](cpu/adl.md) |
 
 Chips instantiate building blocks from `pkg/ip`, which take TAP and
 condition names as parameters:

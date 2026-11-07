@@ -6,9 +6,11 @@ import (
 	"strings"
 	"testing"
 
+	"libredci/pkg/cpu/adl"
 	"libredci/pkg/cpu/kbl"
 	"libredci/pkg/jtag"
 	"libredci/pkg/model"
+	"libredci/pkg/pch/adp"
 	"libredci/pkg/pch/spt"
 )
 
@@ -143,5 +145,35 @@ func TestSplicedWithIDCode(t *testing.T) {
 			"IR[40]=0xffffff02ff DR[36]=0x0 "+
 			"IR[40]=0xffff11ffff DR[16]=0x0 IR[24]=0xff11ff DR[16]=0x0 IR[16]=0x11ff DR[17]=0x0",
 		"IR[8]=0xff DR[2]=0x3",
+	)
+}
+
+// Alder Point-S splices each TAP in with its parent's retime TAP. A group
+// goes directly on the TDO side of its parent, so it sits between the
+// parent and the retimes spliced in at the levels above (chain order TDI to
+// TDO: pch, cl, cl.bottom, cl.retime, pch.retime).
+func TestSplicedNestedRetime(t *testing.T) {
+	var log []string
+	s := New(model.NewPlatform("adp+adl", adp.Chip(), adl.Chip()), &recorder{})
+	s.Plat.Walk(func(tap *model.TAP, _ int) { s.present[tap] = true })
+	s.OnTransaction = func(chain int, scans []*jtag.Scan) {
+		var ops []string
+		for _, sc := range scans {
+			kind := "DR"
+			if sc.IR {
+				kind = "IR"
+			}
+			ops = append(ops, fmt.Sprintf("%s[%d]=%#x", kind, sc.Bits, sc.In))
+		}
+		log = append(log, strings.Join(ops, " "))
+	}
+	tap, _ := s.TAP("pch.cl.bottom")
+	if _, err := s.ReadIDCode(tap); err != nil {
+		t.Fatal(err)
+	}
+	expect(t, log,
+		"IR[8]=0x12 DR[4]=0x5 IR[18]=0x3fc47 DR[42]=0x8000000002 "+
+			"IR[28]=0xffff0cf DR[36]=0x0 "+
+			"IR[28]=0xff11fff DR[44]=0x0 IR[18]=0x4bff DR[6]=0x0",
 	)
 }

@@ -29,8 +29,11 @@ of the chains' root TAPs and models the chips it knows:
 |---|---|---|---|---|
 | Sunrise Point-LP PCH | `spt` | `pkg/pch/spt` | `0x?a506013` | `8087:0a6e` |
 | Kaby Lake U/Y/R CPU | `kbl` | `pkg/cpu/kbl` | `0x?a76d013` | |
+| Alder Point-S PCH | `adp` | `pkg/pch/adp` | `0x?00e6113` | `8087:0b23` |
+| Alder Lake-S CPU (root TAP only) | `adl` | `pkg/cpu/adl` | `0x?00f6113` | |
 
-Tested on the ThinkPad T480 (Kaby Lake R + Sunrise Point-LP).
+Tested on the ThinkPad T480 (Kaby Lake R + Sunrise Point-LP) and the ASUS
+H610M-K (Alder Point-S; its CPU chain reads 0).
 
 ## Target setup
 
@@ -56,6 +59,10 @@ DCI can be enabled in two ways:
   adds support for setting the bit to `ifdtool`.
 * **Host firmware.** An IOSF sideband write: bit 4 of byte 4 on port
   `0xb8`. DCI is then available from that point in the boot onwards.
+
+On the ASUS H610M-K (Alder Point-S), the BIOS enables DCI with Platform
+Debug Consent = Manual, DCI Enable and USB DbC Enable Mode = USB3 under
+Advanced > Debug Settings, a menu the vendor firmware hides.
 
 With DCI enabled, the target shows up on the host as the DbC USB device
 listed under [Supported targets](#supported-targets).
@@ -114,6 +121,8 @@ On Linux, give your user access to the DbC device, e.g. with this udev rule:
 ```
 SUBSYSTEM=="usb", ATTR{idVendor}=="8087", ATTR{idProduct}=="0a6e", MODE="0666"
 ```
+
+with one line per product ID from [Supported targets](#supported-targets).
 
 Put any comment on its own line: current udev ignores rule lines with a
 trailing `#` comment.
@@ -215,7 +224,8 @@ session, so a later `attach` can resume it correctly.
 * [docs/protocol.md](docs/protocol.md): the DCI DbC wire protocol.
 * [docs/model.md](docs/model.md): TAP networks, links, registers,
   preconditions, chip detection.
-* Chips: [pch/spt.md](docs/pch/spt.md), [cpu/kbl.md](docs/cpu/kbl.md).
+* Chips: [pch/spt.md](docs/pch/spt.md), [pch/adp.md](docs/pch/adp.md),
+  [cpu/kbl.md](docs/cpu/kbl.md), [cpu/adl.md](docs/cpu/adl.md).
 * Building blocks: [vcu](docs/ip/vcu.md).
 * [docs/runctl.md](docs/runctl.md): the run-control interface and its
   backends, [Lakemont](docs/runctl/lakemont.md) probe mode (CSME, ISH) and

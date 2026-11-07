@@ -11,9 +11,11 @@ import (
 	"math/big"
 	"strings"
 
+	"libredci/pkg/cpu/adl"
 	"libredci/pkg/cpu/kbl"
 	"libredci/pkg/jtag"
 	"libredci/pkg/model"
+	"libredci/pkg/pch/adp"
 	"libredci/pkg/pch/spt"
 	"libredci/pkg/tapnet"
 )
@@ -42,9 +44,11 @@ func (c *Chip) matches(idcode uint32) bool { return c.New().Root.IDCodeMatches(i
 var (
 	PCHs = []*Chip{
 		{Name: "spt", Desc: "Sunrise Point-LP", New: spt.Chip},
+		{Name: "adp", Desc: "Alder Point-S", New: adp.Chip},
 	}
 	CPUs = []*Chip{
 		{Name: "kbl", Desc: "Kaby Lake U/Y/R", New: kbl.Chip, CSR: kbl.VCU},
+		{Name: "adl", Desc: "Alder Lake-S", New: adl.Chip},
 	}
 )
 
