@@ -5,7 +5,8 @@ PCH when Direct Connect Interface (DCI) runs in **DbC mode**. In that mode the
 target's xHCI Debug Capability shows up on the host as a USB device, and all
 debug traffic (bridge control and JTAG) goes over one pair of bulk endpoints.
 
-Applies to: Sunrise Point-LP (ThinkPad T480, USB ID `8087:0a6e`). Values marked
+Applies to: Sunrise Point-LP (ThinkPad T480, USB ID `8087:0a6e`) and Alder
+Point-S (ASUS H610M-K, `8087:0b23`). Values marked
 "required" must be written as given; their individual function is not documented.
 
 ## USB device
@@ -13,7 +14,7 @@ Applies to: Sunrise Point-LP (ThinkPad T480, USB ID `8087:0a6e`). Values marked
 | Field | Value |
 |---|---|
 | Vendor | `0x8087` |
-| Product | `0x0a6e` on SPT-LP. Intel uses `0x0a6e`–`0x0a79` and `0x0ae6`–`0x0aef` for DCI DbC devices. |
+| Product | `0x0a6e` on SPT-LP, `0x0b23` on ADP-S. Intel uses `0x0a6e`–`0x0a79` and `0x0ae6`–`0x0aef` for DCI DbC devices. |
 | Speed | SuperSpeed |
 | Configuration | 1, four interfaces of class `0xDC` (diagnostic), grouped by one IAD |
 
@@ -81,7 +82,7 @@ byte 4..   16-bit words; word i is at byte 4 + 2i
 |---|---|
 | 0, 1 | Both `2` while the host owns the bridge, `0` otherwise. |
 | 8 | In a pin snapshot: bit 1 = PREQ asserted. |
-| 14 | High byte: ExI SIP version (`0x28` = generation 2, PCH client, on SPT-LP). Low byte: low byte of 0.`0x0b`. |
+| 14 | High byte: ExI SIP version (`0x28` = generation 2, PCH client, on SPT-LP; `0x58` on ADP-S). Low byte: low byte of 0.`0x0b`. |
 | 16–25 | Bank-1 registers 0–9, echoed. |
 
 Status packets also follow every completed JTAG transaction.
