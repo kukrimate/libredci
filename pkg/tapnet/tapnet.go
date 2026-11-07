@@ -320,14 +320,11 @@ func (s *Session) access(tap *model.TAP, body func(b *jtag.Builder, c ctx)) erro
 			total, val, _ := pc.drLayout(l.Width, mask)
 			b.DR(total, val)
 			b.Idle(4)
-			taps := slices.Clone(pc.taps)
-			target := 0
-			for _, g := range group {
-				if g == t {
-					target = len(taps)
-				}
-				taps = append(taps, g)
-			}
+			// The group sits directly on the TDO side of its parent, ahead
+			// of anything spliced in earlier further towards TDO.
+			at := pc.target + 1
+			taps := slices.Insert(slices.Clone(pc.taps), at, group...)
+			target := at + slices.Index(group, t)
 			undos = append(undos, undo{physical{taps: taps, target: pc.target}, pc.target, l})
 			chain = physical{taps: taps, target: target}
 			c = chain

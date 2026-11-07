@@ -39,8 +39,9 @@ A child is reached from its parent through one of two kinds of **link**.
 
 The parent has a select register (instruction `SelectIR`, `Width` bits).
 Writing 1 to bit `Bit` and passing Update-DR inserts the child into the
-physical chain **directly on the TDO side of the parent**. Writing all zeros
-removes all children again.
+physical chain **directly on the TDO side of the parent**, between the
+parent and any TAPs spliced in earlier further towards TDO. Writing all
+zeros removes all children again. Splicing persists through Test-Logic-Reset.
 
 A child can need siblings on the same select register inserted with it
 (`With`): all their bits are set in one write, and the inserted TAPs sit in
