@@ -8,12 +8,22 @@ package adp
 import (
 	"strings"
 
+	"libredci/pkg/ip/dbcdma"
 	"libredci/pkg/ip/iosfsb"
 	"libredci/pkg/model"
 )
 
 // TPSB is the PCH's TAP-to-sideband bridge.
 var TPSB = iosfsb.Bridge{TAP: "pch.cl.left.master_vnn.tpsb"}
+
+// DMA is the xHCI DbC's GP2 DMA engine. Payloads go to host memory
+// through DMI; the status goes to the ExI's mailbox register at IOSF
+// primary address 0x1002001c.
+var DMA = dbcdma.Engine{
+	Sideband: &TPSB, Port: 0x70, BAR: 5,
+	Memory:     dbcdma.PSFDestination(1, 0, 0, 0),
+	StatusAddr: 0x1002001c, StatusDest: dbcdma.PSFDestination(2, 6, 1, 1),
+}
 
 func f(name string, hi, lo int) model.Field { return model.Field{Name: name, Lo: lo, Hi: hi} }
 func bit(name string, b int) model.Field    { return model.Field{Name: name, Lo: b, Hi: b} }

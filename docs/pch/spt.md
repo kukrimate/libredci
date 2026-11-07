@@ -58,7 +58,7 @@ On the T480 (with the Trace Hub enabled, Red Unlock):
 * The xHCI is port `0xe6` (as on Lewisburg); a config read of FID `0xa0`
   offset 0 returns `0x9d2f8086`. Port `0x70`, the xHCI on Cannon Point and
   later, returns unsupported request.
-* The DbC GP2 registers are at port
+* The DbC GP2 registers ([ip/dbcdma.md](../ip/dbcdma.md)) are at port
   `0xe6`, BAR 5, offsets `0x00`–`0x34`. They read 0 after boot, and a write
   to IN payload low (`0x1c`) reads back.
 * The Trace Hub (NPK) is port `0xb6`, FID 0: a config read of offset 0
@@ -74,3 +74,30 @@ Ermolov published for Lewisburg (Black Hat Asia 2019): xHCI `0xe6`, NPK
 `0xb6`, GPIO community 0 `0xaf`, PSF3 `0xbc`.
 
 Whether the T480's TPSB works without Red Unlock is untested.
+
+## DMA
+
+The DbC's GP2 registers are at sideband port `0xe6`, BAR 5 (above). The
+payload goes to host memory with PSF decode mode 1, as on Alder Point-S.
+On the T480 (Linux with `intel_iommu=off`), reads of `0x20` and `0x100`
+bytes at `0x400` match the same range read through a halted core, with
+every status route below.
+
+The status write needs a destination. Routes tried, each with the status
+of a read from `0x400`:
+
+| Status address and PSF destination | Result |
+|---|---|
+| physical 0, mode 1 | written: `0x00200000` after `0x20` bytes, `0x01000000` after `0x100` bytes (length << 16) |
+| Trace Hub `0xfe1a100c`, mode 1 | not written; the platform keeps running |
+| Trace Hub `0xfe1a100c`, mode 0 | the DCI bridge and the host hang at once |
+| Trace Hub `0xfe1a100c`, mode 2, PSF 3, group 1, port 8 (Lewisburg's NPK destination) | not written; the host hangs within minutes, the PCH keeps answering over DCI |
+
+After a transfer whose status is not written, GP2 IN length (`0x28`)
+keeps its valid bit and bit 31 of the DbC control/status register
+(`0x70`) is set; a platform reset clears them.
+
+`pch/spt` has no DMA engine yet. The memory route works but needs a halted
+core to save and restore the status dword. A route without a halt needs
+the Trace Hub's PSF destination (port group and port on PSF3), which is
+not known.

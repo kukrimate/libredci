@@ -31,6 +31,8 @@ const (
 	vendorIntel = gousb.ID(0x8087)
 	dfxIface    = 1 // interface carrying ExI DFX packets (bulk EP 3 in/out)
 	dfxEP       = 3
+	dmaIface    = 3 // DMA interface (bulk EP 2 in/out)
+	dmaEP       = 2
 	maxXfer     = 1024 // OpenIPC never exceeds one max-size SuperSpeed packet
 )
 
@@ -69,6 +71,9 @@ type Probe struct {
 	intf *gousb.Interface
 	out  *gousb.OutEndpoint
 	in   *gousb.InEndpoint
+
+	dmaIntf *gousb.Interface
+	dmaIn   *gousb.InEndpoint
 
 	Verbose bool
 	Timeout time.Duration
@@ -145,6 +150,9 @@ func (p *Probe) claim() error {
 }
 
 func (p *Probe) closeUSB() {
+	if p.dmaIntf != nil {
+		p.dmaIntf.Close()
+	}
 	if p.intf != nil {
 		p.intf.Close()
 	}
@@ -155,6 +163,36 @@ func (p *Probe) closeUSB() {
 		p.dev.Close()
 	}
 	p.ctx.Close()
+}
+
+// DMARead reads n bytes from the DMA interface (interface 3, bulk IN
+// endpoint 0x82), claiming it on first use. The target sends the payload
+// of a DMA read programmed into its DbC.
+func (p *Probe) DMARead(n int, timeout time.Duration) ([]byte, error) {
+	if p.dmaIn == nil {
+		intf, err := p.cfg.Interface(dmaIface, 0)
+		if err != nil {
+			return nil, fmt.Errorf("dci: claim DMA interface: %w", err)
+		}
+		in, err := intf.InEndpoint(dmaEP)
+		if err != nil {
+			intf.Close()
+			return nil, err
+		}
+		p.dmaIntf, p.dmaIn = intf, in
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	buf := make([]byte, n)
+	got := 0
+	for got < n {
+		k, err := p.dmaIn.ReadContext(ctx, buf[got:])
+		got += k
+		if err != nil {
+			return buf[:got], fmt.Errorf("dci: DMA read: %w", err)
+		}
+	}
+	return buf, nil
 }
 
 // reader continuously drains the IN endpoint and routes packets.

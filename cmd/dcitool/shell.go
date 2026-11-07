@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/arch/x86/x86asm"
 	"libredci/pkg/dci"
+	"libredci/pkg/ip/dbcdma"
 	"libredci/pkg/ip/iosfsb"
 	"libredci/pkg/platform"
 	"libredci/pkg/runctl"
@@ -60,6 +61,8 @@ const shellHelp = `commands:
   sb SPACE PORT FID BAR OFF [SIZE] [VAL]
                              IOSF sideband register via the PCH's TPSB;
                              SPACE is mem, io, cfg or cr, SIZE 1/2/4/8
+  dma ADDR LEN FILE          read LEN bytes of physical memory into FILE
+                             through the DbC's DMA engine (no halt needed)
   scan TAP IR N:VALUE        raw IR/DR scan on a modelled TAP
   idcodes                    check all TAP IDCODEs
   pins                       show debug pin state (PREQ, raw snapshot)
@@ -68,6 +71,10 @@ const shellHelp = `commands:
   detach                     exit leaving halted threads halted
   quit                       exit (resumes threads halted in this session)
 `
+
+type dmaReader interface {
+	DMARead(n int, timeout time.Duration) ([]byte, error)
+}
 
 type pinDriver interface {
 	PulseReset() error
@@ -269,6 +276,8 @@ func (sh *shell) exec(line string) (done bool, err error) {
 		return false, sh.csrCmd(f)
 	case "sb":
 		return false, sh.sbCmd(f)
+	case "dma":
+		return false, sh.dmaCmd(f)
 	case "reset":
 		pd, ok := sh.s.Drv.(pinDriver)
 		if !ok {
@@ -777,6 +786,40 @@ func (sh *shell) sbCmd(f []string) error {
 	}
 	fmt.Printf("%s = 0x%0*x\n", strings.Join(f[1:6], " "), 2*size, v)
 	return nil
+}
+
+// dmaCmd: dma ADDR LEN FILE
+func (sh *shell) dmaCmd(f []string) error {
+	if sh.plat.DMA == nil {
+		return fmt.Errorf("dma: platform %s has no DMA engine", sh.plat.Name)
+	}
+	dr, ok := sh.s.Drv.(dmaReader)
+	if !ok {
+		return errors.New("dma: probe has no DMA interface")
+	}
+	if len(f) != 4 {
+		return fmt.Errorf("usage: see help")
+	}
+	addr, err := num(f[1])
+	if err != nil {
+		return err
+	}
+	n, err := num(f[2])
+	if err != nil {
+		return err
+	}
+	if n == 0 || n > dbcdma.MaxLen {
+		return fmt.Errorf("dma: length %#x out of range", n)
+	}
+	if err := sh.plat.DMA.StartRead(sh.s, addr, uint32(n)); err != nil {
+		return err
+	}
+	data, err := dr.DMARead(int(n), 5*time.Second)
+	if werr := os.WriteFile(f[3], data, 0o644); werr != nil && err == nil {
+		err = werr
+	}
+	fmt.Printf("received %#x of %#x bytes\n", len(data), n)
+	return err
 }
 
 // disassemble prints x86 code in the given mode (16, 32 or 64).

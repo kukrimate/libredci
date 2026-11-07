@@ -52,3 +52,15 @@ Root registers:
 `adp.TPSB` is `pch.cl.left.master_vnn.tpsb` (see
 [ip/iosfsb.md](../ip/iosfsb.md)). On the H610M-K (no unlock) it works with
 BIOS defaults.
+
+## DMA
+
+`adp.DMA` is the xHCI DbC's GP2 engine (see [ip/dbcdma.md](../ip/dbcdma.md))
+at sideband port `0x70`, BAR 5. The payload goes to host memory (DMI,
+decode mode 1); the status goes to the ExI mailbox register at
+`0x1002001c`, PSF destination (2, 6, 1, 1).
+
+On the H610M-K, reads below `0xa0000` return the same data when repeated,
+a read at `0x8000` matches the same range of a read at 0, and the length
+register's valid bit clears after a transfer. The status dword is not read
+back.

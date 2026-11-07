@@ -25,7 +25,9 @@ Point-S (ASUS H610M-K, `8087:0b23`). Values marked
 | 2 | bulk IN `0x84` | trace |
 | 3 | bulk OUT `0x02`, bulk IN `0x82` | DMA |
 
-Only interface 1 is needed for debugging.
+Only interface 1 is needed for debugging. The payload of a DMA read
+programmed into the DbC (see [ip/dbcdma.md](ip/dbcdma.md)) arrives on bulk IN
+`0x82` as plain data.
 
 ## Packets
 
