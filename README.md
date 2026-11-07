@@ -107,6 +107,14 @@ Orange (OEM) Unlock, which Red Unlock includes, and the ISH enabled:
 
 Boards that use the ISH ship with both.
 
+### Sideband access
+
+IOSF sideband access (the shell's `sb` command) goes through the PCH's TPSB
+TAP. On Sunrise Point it needs the Trace Hub enabled by host firmware: in
+coreboot, `device ref tracehub on end` in the devicetree, which sets FSP's
+`EnableTraceHub`. The Trace Hub PCI device (`00:1f.7`) stays hidden from
+the OS either way. See [docs/pch/spt.md](docs/pch/spt.md#sideband).
+
 ## Building
 
 Needs Go 1.22 or later and the libusb-1.0 development files (Debian:
@@ -211,6 +219,7 @@ cpu.c0t0 running
 | `ior PORT [SIZE]`, `iow PORT VALUE [SIZE]` | I/O ports |
 | `rdmsr INDEX`, `wrmsr INDEX VALUE` | MSRs (only MSRs known to exist, unless `force` is added) |
 | `csr DEV FN OFF [SIZE] [VAL]`, `mmio DEV FN BAR OFF [SIZE] [VAL]` | uncore CSR / MMIO |
+| `sb SPACE PORT FID BAR OFF [SIZE] [VAL]` | IOSF sideband register through the PCH's TPSB (`SPACE`: `mem`, `io`, `cfg`, `cr`) |
 | `pins`, `preq on\|off`, `reset` | debug pins, platform reset |
 | `scan TAP IR N:VALUE`, `idcodes` | raw TAP access |
 | `attach`, `forcego`, `detach`, `quit` | session control |
@@ -226,7 +235,7 @@ session, so a later `attach` can resume it correctly.
   preconditions, chip detection.
 * Chips: [pch/spt.md](docs/pch/spt.md), [pch/adp.md](docs/pch/adp.md),
   [cpu/kbl.md](docs/cpu/kbl.md), [cpu/adl.md](docs/cpu/adl.md).
-* Building blocks: [vcu](docs/ip/vcu.md).
+* Building blocks: [vcu](docs/ip/vcu.md), [iosfsb](docs/ip/iosfsb.md).
 * [docs/runctl.md](docs/runctl.md): the run-control interface and its
   backends, [Lakemont](docs/runctl/lakemont.md) probe mode (CSME, ISH) and
   [big-core](docs/runctl/bigcore.md) probe mode (host cores, including the
@@ -243,6 +252,6 @@ session, so a later `attach` can resume it correctly.
 | `pkg/tapnet` | named TAP/register access, preconditions |
 | `pkg/pch`, `pkg/cpu` | chip descriptions: one package per PCH or CPU |
 | `pkg/platform` | known chips, detection by IDCODE, and their composition into a platform |
-| `pkg/ip` | building blocks used by chips: `vcu` (uncore CSR/MMIO access) |
+| `pkg/ip` | building blocks used by chips: `vcu` (uncore CSR/MMIO access), `iosfsb` (IOSF sideband through a TPSB) |
 | `pkg/runctl` | run control; `lakemont` for CSME and ISH cores, `bigcore` for Kaby Lake cores |
 | `tools` | development helpers: USB capture, traffic decoding, OpenIPC setup ([tools/README.md](tools/README.md)) |

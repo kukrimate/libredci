@@ -13,6 +13,7 @@ import (
 
 	"libredci/pkg/cpu/adl"
 	"libredci/pkg/cpu/kbl"
+	"libredci/pkg/ip/iosfsb"
 	"libredci/pkg/jtag"
 	"libredci/pkg/model"
 	"libredci/pkg/pch/adp"
@@ -35,7 +36,8 @@ type Chip struct {
 	Name, Desc string
 	New        func() model.Chip
 	// Access paths the chip offers; nil if it has none.
-	CSR CSR
+	CSR      CSR
+	Sideband *iosfsb.Bridge // IOSF sideband bridge (PCH)
 }
 
 func (c *Chip) matches(idcode uint32) bool { return c.New().Root.IDCodeMatches(idcode) }
@@ -43,8 +45,8 @@ func (c *Chip) matches(idcode uint32) bool { return c.New().Root.IDCodeMatches(i
 // PCHs are the known PCHs (chain 0), CPUs the known CPUs (chain 1).
 var (
 	PCHs = []*Chip{
-		{Name: "spt", Desc: "Sunrise Point-LP", New: spt.Chip},
-		{Name: "adp", Desc: "Alder Point-S", New: adp.Chip},
+		{Name: "spt", Desc: "Sunrise Point-LP", New: spt.Chip, Sideband: &spt.TPSB},
+		{Name: "adp", Desc: "Alder Point-S", New: adp.Chip, Sideband: &adp.TPSB},
 	}
 	CPUs = []*Chip{
 		{Name: "kbl", Desc: "Kaby Lake U/Y/R", New: kbl.Chip, CSR: kbl.VCU},
@@ -120,6 +122,7 @@ type Platform struct {
 	*model.Platform
 	PCH, CPU *Chip
 	CSR      CSR
+	Sideband *iosfsb.Bridge
 }
 
 // New composes a platform from a PCH and a CPU; either may be nil.
@@ -135,6 +138,9 @@ func New(pch, cpu *Chip) *Platform {
 		names = append(names, c.Name)
 		if c.CSR != nil {
 			p.CSR = c.CSR
+		}
+		if c.Sideband != nil {
+			p.Sideband = c.Sideband
 		}
 	}
 	p.Platform = model.NewPlatform(strings.Join(names, "+"), chips[:]...)

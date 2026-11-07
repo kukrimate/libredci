@@ -8,8 +8,12 @@ package adp
 import (
 	"strings"
 
+	"libredci/pkg/ip/iosfsb"
 	"libredci/pkg/model"
 )
+
+// TPSB is the PCH's TAP-to-sideband bridge.
+var TPSB = iosfsb.Bridge{TAP: "pch.cl.left.master_vnn.tpsb"}
 
 func f(name string, hi, lo int) model.Field { return model.Field{Name: name, Lo: lo, Hi: hi} }
 func bit(name string, b int) model.Field    { return model.Field{Name: name, Lo: b, Hi: b} }
@@ -60,6 +64,7 @@ func pch() *model.TAP {
 		parent := taps[p.parent]
 		parent.Children = append(parent.Children, t)
 	}
+	taps[TPSB.TAP].Registers = iosfsb.Registers()
 	return root
 }
 

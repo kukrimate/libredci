@@ -46,3 +46,9 @@ Root registers:
 | `cltcr1` | `0xc1` | 0 pmode force, 1 pmode TPE, 9:2 pmode state, 10 pmode enable |
 | `cltdbg` | `0xc4` | 0 force VCCSTG on, 1 VCCST power good, 2/3 CPU C10 gate (PMC/DFX), 4 CPU cluster TAP available |
 | `tapcr` | `0xcd` | straps and status, e.g. 0 boot halt strap, 25 SPI config done, 29 CSME reset |
+
+## Sideband
+
+`adp.TPSB` is `pch.cl.left.master_vnn.tpsb` (see
+[ip/iosfsb.md](../ip/iosfsb.md)). On the H610M-K (no unlock) it works with
+BIOS defaults.

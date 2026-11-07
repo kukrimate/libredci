@@ -28,6 +28,7 @@ condition names as parameters:
 | Block | Package | Description |
 |---|---|---|
 | VCU: uncore CSR and MMIO access | `pkg/ip/vcu` | [ip/vcu.md](ip/vcu.md) |
+| IOSF sideband through a TAP2IOSFSB | `pkg/ip/iosfsb` | [ip/iosfsb.md](ip/iosfsb.md) |
 
 ## Concepts
 

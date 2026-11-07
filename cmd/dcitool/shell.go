@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/arch/x86/x86asm"
 	"libredci/pkg/dci"
+	"libredci/pkg/ip/iosfsb"
 	"libredci/pkg/platform"
 	"libredci/pkg/runctl"
 	_ "libredci/pkg/runctl/bigcore"
@@ -56,6 +57,9 @@ const shellHelp = `commands:
   iow PORT VALUE [SIZE]      write I/O port
   csr DEV FN OFF [SIZE] [VAL]      uncore CSR via the VCU (no halt needed)
   mmio DEV FN BAR OFF [SIZE] [VAL] device MMIO via the VCU
+  sb SPACE PORT FID BAR OFF [SIZE] [VAL]
+                             IOSF sideband register via the PCH's TPSB;
+                             SPACE is mem, io, cfg or cr, SIZE 1/2/4/8
   scan TAP IR N:VALUE        raw IR/DR scan on a modelled TAP
   idcodes                    check all TAP IDCODEs
   pins                       show debug pin state (PREQ, raw snapshot)
@@ -263,6 +267,8 @@ func (sh *shell) exec(line string) (done bool, err error) {
 		return false, checkIDCodes(sh.s)
 	case "csr", "mmio":
 		return false, sh.csrCmd(f)
+	case "sb":
+		return false, sh.sbCmd(f)
 	case "reset":
 		pd, ok := sh.s.Drv.(pinDriver)
 		if !ok {
@@ -734,6 +740,42 @@ func (sh *shell) csrCmd(f []string) error {
 		return err
 	}
 	fmt.Printf("%s = 0x%0*x\n", strings.Join(f[1:n+1], " "), 2*size, out)
+	return nil
+}
+
+// sbCmd: sb SPACE PORT FID BAR OFF [SIZE] [VAL]
+func (sh *shell) sbCmd(f []string) error {
+	if sh.plat.Sideband == nil {
+		return fmt.Errorf("sb: platform %s has no sideband access", sh.plat.Name)
+	}
+	if len(f) < 6 {
+		return fmt.Errorf("usage: see help")
+	}
+	op, ok := iosfsb.Spaces[f[1]]
+	if !ok {
+		return fmt.Errorf("sb: unknown space %q", f[1])
+	}
+	var a []uint64
+	for _, x := range f[2:] {
+		v, err := num(x)
+		if err != nil {
+			return err
+		}
+		a = append(a, v)
+	}
+	size := uint64(4)
+	if len(a) > 4 {
+		size = a[4]
+	}
+	m := iosfsb.Msg{Port: uint8(a[0]), Opcode: op, FID: uint8(a[1]), BAR: uint8(a[2]), Offset: a[3], Bits: int(size) * 8}
+	if len(a) > 5 {
+		return sh.plat.Sideband.Write(sh.s, m, a[5])
+	}
+	v, err := sh.plat.Sideband.Read(sh.s, m)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s = 0x%0*x\n", strings.Join(f[1:6], " "), 2*size, v)
 	return nil
 }
 

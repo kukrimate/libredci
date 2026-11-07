@@ -8,8 +8,13 @@ package spt
 import (
 	"math/big"
 
+	"libredci/pkg/ip/iosfsb"
 	"libredci/pkg/model"
 )
+
+// TPSB is the PCH's TAP-to-sideband bridge, a generation 2.0 TAP2IOSFSB.
+// It operates only with the Trace Hub enabled (see docs/models.md).
+var TPSB = iosfsb.Bridge{TAP: "pch.master.tpsb", Legacy: true}
 
 // TdoHoldReleased is the condition releasing the PCH's TDO hold.
 const TdoHoldReleased = "pch_tdo_hold_released"
@@ -25,6 +30,11 @@ func pchSub(name string, idcode uint32, width, bit int, optional bool, children 
 		Requires: []string{TdoHoldReleased},
 		Children: children,
 	}
+}
+
+func withRegisters(t *model.TAP, r ...*model.Register) *model.TAP {
+	t.Registers = append(t.Registers, r...)
+	return t
 }
 
 func withThreads(t *model.TAP, th ...model.Thread) *model.TAP {
@@ -44,7 +54,7 @@ func pch() *model.TAP {
 		},
 		Children: []*model.TAP{
 			pchSub("pch.master", 0x02080001, 16, 0, false,
-				pchSub("pch.master.tpsb", 0x00082003, 24, 2, true),
+				withRegisters(pchSub(TPSB.TAP, 0x00082003, 24, 2, true), iosfsb.Registers()...),
 				pchSub("pch.master.npk", 0x00082007, 24, 6, true),
 				pchSub("pch.master.retime", 0x00082017, 24, 22, false),
 			),
